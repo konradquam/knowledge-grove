@@ -8,6 +8,7 @@ from sqlalchemy.engine import make_url
 from testcontainers.community.postgres import PostgresContainer
 
 from knowledge_grove.db import get_engine, get_session
+from knowledge_grove.utils.embedding import EmbeddingModel
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PG_IMAGE = "pgvector/pgvector:pg16"
@@ -116,3 +117,7 @@ def vec(dominant_dim: int, dim: int = 768) -> list[float]:
     v = [0.01] * dim
     v[dominant_dim] = 0.9
     return v
+
+@pytest.fixture(scope="session")
+def embedding_model():
+    return EmbeddingModel()
