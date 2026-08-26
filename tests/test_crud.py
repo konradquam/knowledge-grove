@@ -9,6 +9,56 @@ from knowledge_grove.models import DocumentAccess, Edge
 from conftest import vec
 
 
+def test_add_document_auto_embeds_when_not_given(alice, embedding_model):
+    doc = crud.add_document(alice, content="Retries should use exponential backoff.", owner_agent="agent_alice")
+    alice.commit()
+
+    assert doc.embedding is not None
+    assert len(doc.embedding) == len(embedding_model.embed_text("anything"))
+
+
+def test_add_document_uses_explicit_embedding_when_given(alice):
+    doc = crud.add_document(
+        alice, content="near match", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    assert doc.embedding == vec(0)
+
+
+def test_add_document_auto_embeds_summary_when_summary_given_without_one(alice, embedding_model):
+    doc = crud.add_document(
+        alice, content="content", embedding=vec(0), owner_agent="agent_alice", summary="a short summary"
+    )
+    alice.commit()
+
+    assert doc.summary_embedding is not None
+    assert len(doc.summary_embedding) == len(embedding_model.embed_text("anything"))
+
+
+def test_add_document_no_summary_means_no_summary_embedding(alice):
+    doc = crud.add_document(
+        alice, content="content", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    assert doc.summary is None
+    assert doc.summary_embedding is None
+
+
+def test_update_document_auto_embeds_when_not_given(alice, embedding_model):
+    original = crud.add_document(
+        alice, content="v1", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    revised = crud.update_document(alice, original.id, content="v2 with new wording")
+    alice.commit()
+
+    assert revised.embedding is not None
+    assert len(revised.embedding) == len(embedding_model.embed_text("anything"))
+
+
 def test_add_document_sets_fields(alice):
     doc = crud.add_document(
         alice,

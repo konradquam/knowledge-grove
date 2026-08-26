@@ -4,18 +4,30 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from knowledge_grove.models import Document, DocumentAccess, DocumentTag, Edge, RetrievalFeedback
+from knowledge_grove.utils.embedding import get_embedding_model
 
 
 def add_document(
     session: Session,
     content: str,
-    embedding: list[float],
     owner_agent: str,
+    embedding: list[float] | None = None,
     summary: str | None = None,
     summary_embedding: list[float] | None = None,
     source_url: str | None = None,
 ) -> Document:
-    """Insert a new chunk row."""
+    """Insert a new chunk row.
+
+    `embedding` (and `summary_embedding`, when `summary` is given) are computed
+    automatically from the text if not supplied — pass one explicitly only if
+    you have a reason to override the default model (a different model, or a
+    precomputed batch embedding).
+    """
+    if embedding is None:
+        embedding = get_embedding_model().embed_text(content)
+    if summary is not None and summary_embedding is None:
+        summary_embedding = get_embedding_model().embed_text(summary)
+
     document = Document(
         content=content,
         embedding=embedding,
@@ -44,7 +56,7 @@ def update_document(
     session: Session,
     document_id: uuid.UUID,
     content: str,
-    embedding: list[float],
+    embedding: list[float] | None = None,
     summary: str | None = None,
     summary_embedding: list[float] | None = None,
     source_url: str | None = None,
@@ -56,6 +68,9 @@ def update_document(
     `deprecated`; a `supersedes` edge links the new row back to it. This
     builds up organizational history for free — the old content, and the
     fact that it was superseded and by what, both stay on record.
+
+    `embedding` is computed automatically from `content` if not supplied, same
+    as `add_document`.
     """
     old_document = session.get(Document, document_id)
     if old_document is None:

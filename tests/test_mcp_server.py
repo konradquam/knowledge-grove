@@ -1,0 +1,300 @@
+"""Tests for mcp_server.py.
+
+Unlike the other modules, mcp_server.py reads KNOWLEDGE_GROVE_DSN and builds
+its engine at *import time* (module-level code), not lazily inside a
+function. That means it can't be imported at file-top the way `crud`/`search`
+are elsewhere in this suite — the real DSN (from the testcontainers-managed
+database) isn't known until the `admin_dsn` fixture runs. The
+`mcp_server_module` fixture below sets the env var and imports it fresh
+inside a test, evicting any previously-cached import first.
+"""
+import asyncio
+import importlib
+import json
+import os
+import sys
+import uuid
+
+import pytest
+
+from knowledge_grove import crud
+from knowledge_grove.db import get_session
+from knowledge_grove.models import DocumentAccess
+
+
+@pytest.fixture()
+def mcp_server_module(admin_dsn):
+    os.environ["KNOWLEDGE_GROVE_DSN"] = admin_dsn
+    sys.modules.pop("knowledge_grove.mcp_server", None)
+    module = importlib.import_module("knowledge_grove.mcp_server")
+    yield module
+    sys.modules.pop("knowledge_grove.mcp_server", None)
+
+
+def test_mcp_server_module_imports_without_error(mcp_server_module):
+    assert mcp_server_module.mcp_server is not None
+
+
+def test_gather_context_tool_is_registered(mcp_server_module):
+    tools = asyncio.run(mcp_server_module.mcp_server.list_tools())
+    tool_names = [t.name for t in tools]
+    assert "gather_context" in tool_names
+
+
+def test_gather_context_tool_returns_json_serializable_results(mcp_server_module):
+    # No embedding anywhere here, on purpose -- this is how an actual agent
+    # calls the tool: text in, nothing about vectors.
+    session = get_session(mcp_server_module.engine)
+    try:
+        doc = crud.add_document(
+            session, content="Retries should use exponential backoff.", owner_agent="agent_alice"
+        )
+        session.commit()
+        doc_id = doc.id
+    finally:
+        session.close()
+
+    results = mcp_server_module.gather_context_tool(query_text="backoff", pattern="backoff")
+
+    json.dumps(results)  # must not raise -- this is what actually crosses the MCP wire
+    assert any(r["id"] == str(doc_id) for r in results)
+
+
+def test_all_crud_tools_are_registered(mcp_server_module):
+    tools = asyncio.run(mcp_server_module.mcp_server.list_tools())
+    tool_names = {t.name for t in tools}
+    assert tool_names == {
+        "gather_context",
+        "add_document",
+        "get_by_id",
+        "get_edges",
+        "update_document",
+        "add_tag",
+        "add_edge",
+        "grant_access",
+        "revoke_access",
+        "log_feedback",
+    }
+
+
+def test_add_document_tool_auto_embeds_and_returns_json_serializable_dict(mcp_server_module):
+    # No embedding parameter anywhere -- content in, dict out.
+    result = mcp_server_module.add_document_tool(
+        content="Retries should use exponential backoff.",
+        owner_agent="agent_alice",
+        summary="Retry policy",
+    )
+    json.dumps(result)  # must not raise
+
+    assert result["content"] == "Retries should use exponential backoff."
+    assert result["summary"] == "Retry policy"
+    assert result["deprecated"] is False
+    assert result["id"]  # a real uuid string was returned
+
+    # It's genuinely embedded, not a stub -- prove it by finding it via search.
+    hits = mcp_server_module.gather_context_tool(query_text="exponential backoff", pattern="backoff")
+    assert any(h["id"] == result["id"] for h in hits)
+
+
+def test_get_by_id_tool_returns_document(mcp_server_module):
+    added = mcp_server_module.add_document_tool(content="findable content", owner_agent="agent_alice")
+
+    fetched = mcp_server_module.get_by_id_tool(added["id"])
+
+    assert fetched is not None
+    assert fetched["id"] == added["id"]
+    assert fetched["content"] == "findable content"
+
+
+def test_get_by_id_tool_returns_none_for_missing(mcp_server_module):
+    assert mcp_server_module.get_by_id_tool(str(uuid.uuid4())) is None
+
+
+def test_get_edges_tool_returns_edges(mcp_server_module):
+    doc_a = mcp_server_module.add_document_tool(content="doc a", owner_agent="agent_alice")
+    doc_b = mcp_server_module.add_document_tool(content="doc b", owner_agent="agent_alice")
+    mcp_server_module.add_edge_tool(
+        from_document_id=doc_a["id"], edge_type="related",
+        description="see also doc b", to_document_id=doc_b["id"],
+    )
+
+    edges = mcp_server_module.get_edges_tool(doc_a["id"])
+    json.dumps(edges)  # must not raise
+
+    assert len(edges) == 1
+    assert edges[0]["to_document_id"] == doc_b["id"]
+    assert edges[0]["description"] == "see also doc b"
+
+
+def test_update_document_tool_creates_new_revision_and_auto_embeds(mcp_server_module):
+    original = mcp_server_module.add_document_tool(content="v1", owner_agent="agent_alice")
+
+    revised = mcp_server_module.update_document_tool(original["id"], content="v2 with new wording")
+
+    assert revised["id"] != original["id"]
+    assert revised["content"] == "v2 with new wording"
+    assert revised["deprecated"] is False
+
+    old = mcp_server_module.get_by_id_tool(original["id"])
+    assert old["deprecated"] is True
+
+
+def test_add_tag_tool(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(content="tagged doc", owner_agent="agent_alice")
+
+    tag = mcp_server_module.add_tag_tool(doc["id"], "  Retries  ", "discusses retry policy")
+    json.dumps(tag)  # must not raise
+
+    assert tag["tag"] == "retries"
+    assert tag["document_id"] == doc["id"]
+
+
+def test_add_edge_tool_to_external_url(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(content="a doc", owner_agent="agent_alice")
+
+    edge = mcp_server_module.add_edge_tool(
+        from_document_id=doc["id"], edge_type="tool",
+        description="points at a tool", external_url="https://example.com/tool.py",
+    )
+    json.dumps(edge)  # must not raise
+
+    assert edge["external_url"] == "https://example.com/tool.py"
+    assert edge["to_document_id"] is None
+
+
+def test_grant_and_revoke_access_tools(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(content="shared doc", owner_agent="agent_alice")
+
+    grant = mcp_server_module.grant_access_tool(doc["id"], "agent_bob", "read")
+    json.dumps(grant)  # must not raise
+    assert grant["grantee_role"] == "agent_bob"
+    assert grant["permission"] == "read"
+
+    result = mcp_server_module.revoke_access_tool(doc["id"], "agent_bob")
+    assert result == {"revoked": True}
+
+
+def test_log_feedback_tool(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(content="feedback target", owner_agent="agent_alice")
+
+    feedback = mcp_server_module.log_feedback_tool(
+        query_text="how do retries work",
+        document_id=doc["id"],
+        source_method="vector",
+        rank=1,
+        judged_by="implicit_usage",
+        relevance=0.9,
+    )
+    json.dumps(feedback)  # must not raise
+
+    assert feedback["document_id"] == doc["id"]
+    assert feedback["rank"] == 1
+
+
+def test_log_feedback_tool_without_relevance(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(content="feedback target", owner_agent="agent_alice")
+
+    feedback = mcp_server_module.log_feedback_tool(
+        query_text="how do retries work",
+        document_id=doc["id"],
+        source_method="vector",
+        rank=1,
+        judged_by="implicit_usage",
+    )
+    json.dumps(feedback)  # must not raise
+
+    assert feedback["document_id"] == doc["id"]
+
+
+def test_add_edge_tool_rejects_both_targets(mcp_server_module):
+    doc_a = mcp_server_module.add_document_tool(content="doc a", owner_agent="agent_alice")
+    doc_b = mcp_server_module.add_document_tool(content="doc b", owner_agent="agent_alice")
+
+    with pytest.raises(ValueError):
+        mcp_server_module.add_edge_tool(
+            from_document_id=doc_a["id"], edge_type="related", description="bad edge",
+            to_document_id=doc_b["id"], external_url="https://example.com",
+        )
+
+
+def test_add_edge_tool_rejects_neither_target(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(content="a doc", owner_agent="agent_alice")
+
+    with pytest.raises(ValueError):
+        mcp_server_module.add_edge_tool(
+            from_document_id=doc["id"], edge_type="related", description="bad edge",
+        )
+
+
+def test_get_edges_tool_returns_empty_list_for_no_edges(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(content="lonely doc", owner_agent="agent_alice")
+
+    assert mcp_server_module.get_edges_tool(doc["id"]) == []
+
+
+def test_get_edges_tool_returns_multiple_edges(mcp_server_module):
+    doc_a = mcp_server_module.add_document_tool(content="doc a", owner_agent="agent_alice")
+    doc_b = mcp_server_module.add_document_tool(content="doc b", owner_agent="agent_alice")
+    doc_c = mcp_server_module.add_document_tool(content="doc c", owner_agent="agent_alice")
+    mcp_server_module.add_edge_tool(
+        from_document_id=doc_a["id"], edge_type="related", description="see b", to_document_id=doc_b["id"],
+    )
+    mcp_server_module.add_edge_tool(
+        from_document_id=doc_a["id"], edge_type="related", description="see c", to_document_id=doc_c["id"],
+    )
+
+    edges = mcp_server_module.get_edges_tool(doc_a["id"])
+
+    assert len(edges) == 2
+    assert {e["to_document_id"] for e in edges} == {doc_b["id"], doc_c["id"]}
+
+
+def test_get_edges_tool_reveals_supersedes_edge_after_update(mcp_server_module):
+    # update_document_tool creates the new revision plus a `supersedes` edge
+    # linking back to the old one -- confirm that's actually visible through
+    # get_edges_tool, tying the two tools together the way an agent would use
+    # them (update, then look at what changed).
+    original = mcp_server_module.add_document_tool(content="v1", owner_agent="agent_alice")
+    revised = mcp_server_module.update_document_tool(original["id"], content="v2")
+
+    edges = mcp_server_module.get_edges_tool(revised["id"])
+
+    assert len(edges) == 1
+    assert edges[0]["edge_type"] == "supersedes"
+    assert edges[0]["to_document_id"] == original["id"]
+
+
+def test_revoke_access_tool_with_specific_permission_leaves_other_intact(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(content="shared doc", owner_agent="agent_alice")
+    mcp_server_module.grant_access_tool(doc["id"], "agent_bob", "read")
+    mcp_server_module.grant_access_tool(doc["id"], "agent_bob", "write")
+
+    session = get_session(mcp_server_module.engine)
+    try:
+        mcp_server_module.revoke_access_tool(doc["id"], "agent_bob", permission="write")
+        remaining = session.query(DocumentAccess).filter_by(
+            document_id=uuid.UUID(doc["id"]), grantee_role="agent_bob"
+        ).all()
+        assert [g.permission for g in remaining] == ["read"]
+    finally:
+        session.close()
+
+
+def test_gather_context_tool_respects_tags(mcp_server_module):
+    tagged = mcp_server_module.add_document_tool(content="retries and backoff", owner_agent="agent_alice")
+    mcp_server_module.add_tag_tool(tagged["id"], "config", "config setting")
+    untagged = mcp_server_module.add_document_tool(content="retries and backoff too", owner_agent="agent_alice")
+
+    results = mcp_server_module.gather_context_tool(
+        query_text="retries", pattern="backoff", tags=["config"],
+    )
+    result_ids = {r["id"] for r in results}
+
+    assert tagged["id"] in result_ids
+    assert untagged["id"] not in result_ids
+
+
+def test_all_registered_tools_have_descriptions(mcp_server_module):
+    tools = asyncio.run(mcp_server_module.mcp_server.list_tools())
+    for tool in tools:
+        assert tool.description, f"{tool.name} is missing a description"
