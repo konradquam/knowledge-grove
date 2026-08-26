@@ -33,7 +33,33 @@ def test_search_vector_excludes_deprecated_by_default(alice, embedding_model):
     assert original.id in [doc.id for doc, _ in results_incl]
 
 
-def test_search_tags_matches_and_normalizes(alice):
+def test_search_vector_filters_by_tags(alice):
+    tagged = crud.add_document(
+        alice, content="near match", embedding=vec(0), owner_agent="agent_alice"
+    )
+    crud.add_tag(alice, tagged.id, "retries", "retry policy")
+    untagged = crud.add_document(
+        alice, content="near match too", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    results = search.search_vector(alice, vec(0), tags=["retries"])
+    result_ids = [doc.id for doc, _score in results]
+
+    assert tagged.id in result_ids
+    assert untagged.id not in result_ids
+
+
+def test_search_vector_tags_no_match_returns_empty(alice):
+    crud.add_document(
+        alice, content="near match", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    assert search.search_vector(alice, vec(0), tags=["nonexistent"]) == []
+
+
+def test_search_tag_matches_and_normalizes(alice):
     doc = crud.add_document(
         alice, content="tagged", embedding=vec(0), owner_agent="agent_alice"
     )
@@ -41,20 +67,20 @@ def test_search_tags_matches_and_normalizes(alice):
     crud.add_tag(alice, doc.id, "retries", "retry policy")
     alice.commit()
 
-    results = search.search_tags(alice, "  RETRIES  ")
+    results = search.search_tag(alice, "  RETRIES  ")
     assert doc.id in [d.id for d in results]
 
 
-def test_search_tags_no_match_returns_empty(alice):
+def test_search_tag_no_match_returns_empty(alice):
     doc = crud.add_document(
         alice, content="untagged", embedding=vec(0), owner_agent="agent_alice"
     )
     alice.commit()
 
-    assert search.search_tags(alice, "nonexistent") == []
+    assert search.search_tag(alice, "nonexistent") == []
 
 
-def test_search_tags_excludes_deprecated_by_default(alice):
+def test_search_tag_excludes_deprecated_by_default(alice):
     original = crud.add_document(
         alice, content="v1", embedding=vec(0), owner_agent="agent_alice"
     )
@@ -64,8 +90,42 @@ def test_search_tags_excludes_deprecated_by_default(alice):
     crud.update_document(alice, original.id, content="v2", embedding=vec(0))
     alice.commit()
 
-    results = search.search_tags(alice, "retries")
+    results = search.search_tag(alice, "retries")
     assert original.id not in [d.id for d in results]
+
+
+def test_search_tags_matches_any_of_multiple_tags(alice):
+    doc = crud.add_document(
+        alice, content="tagged", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+    crud.add_tag(alice, doc.id, "retries", "retry policy")
+    alice.commit()
+
+    results = search.search_tags(alice, ["config", "retries"])
+    assert doc.id in [d.id for d in results]
+
+
+def test_search_tags_deduplicates_document_matching_multiple_tags(alice):
+    doc = crud.add_document(
+        alice, content="tagged twice", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+    crud.add_tag(alice, doc.id, "retries", "retry policy")
+    crud.add_tag(alice, doc.id, "config", "config knob")
+    alice.commit()
+
+    results = search.search_tags(alice, ["config", "retries"])
+    assert [d.id for d in results].count(doc.id) == 1
+
+
+def test_search_tags_no_match_returns_empty(alice):
+    doc = crud.add_document(
+        alice, content="untagged", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    assert search.search_tags(alice, ["nonexistent", "also-nonexistent"]) == []
 
 
 def test_search_fulltext_matches_stemmed_terms(alice):
@@ -89,6 +149,42 @@ def test_search_fulltext_no_match_returns_empty(alice):
     alice.commit()
 
     assert search.search_fulltext(alice, "nonexistent phrase xyz") == []
+
+
+def test_search_fulltext_filters_by_tags(alice):
+    tagged = crud.add_document(
+        alice,
+        content="Retries should use exponential backoff.",
+        embedding=vec(0),
+        owner_agent="agent_alice",
+    )
+    crud.add_tag(alice, tagged.id, "retries", "retry policy")
+    untagged = crud.add_document(
+        alice,
+        content="Retries should use linear backoff.",
+        embedding=vec(1),
+        owner_agent="agent_alice",
+    )
+    alice.commit()
+
+    results = search.search_fulltext(alice, "retry backoff", tags=["retries"])
+    result_ids = [doc.id for doc, _score in results]
+
+    assert tagged.id in result_ids
+    assert untagged.id not in result_ids
+
+
+def test_search_fulltext_tags_no_match_returns_empty(alice):
+    crud.add_document(
+        alice,
+        content="Retries should use exponential backoff.",
+        embedding=vec(0),
+        owner_agent="agent_alice",
+    )
+    alice.commit()
+
+    assert search.search_fulltext(alice, "retry backoff", tags=["nonexistent"]) == []
+
 
 def test_search_fulltext_correct_ranking(alice):
     top_doc =crud.add_document(
@@ -158,6 +254,42 @@ def test_search_ilike_no_match_returns_empty(alice):
     alice.commit()
 
     assert search.search_ilike(alice, "NONEXISTENT_TOKEN") == []
+
+
+def test_search_ilike_filters_by_tags(alice):
+    tagged = crud.add_document(
+        alice,
+        content="Configure RETRY_TIMEOUT_MS before deploying.",
+        embedding=vec(0),
+        owner_agent="agent_alice",
+    )
+    crud.add_tag(alice, tagged.id, "config", "config knob")
+    untagged = crud.add_document(
+        alice,
+        content="Also configure RETRY_TIMEOUT_MS carefully.",
+        embedding=vec(1),
+        owner_agent="agent_alice",
+    )
+    alice.commit()
+
+    results = search.search_ilike(alice, "RETRY_TIMEOUT_MS", tags=["config"])
+    result_ids = [doc.id for doc, _score in results]
+
+    assert tagged.id in result_ids
+    assert untagged.id not in result_ids
+
+
+def test_search_ilike_tags_no_match_returns_empty(alice):
+    crud.add_document(
+        alice,
+        content="Configure RETRY_TIMEOUT_MS before deploying.",
+        embedding=vec(0),
+        owner_agent="agent_alice",
+    )
+    alice.commit()
+
+    assert search.search_ilike(alice, "RETRY_TIMEOUT_MS", tags=["nonexistent"]) == []
+
 
 def test_search_ilike_ranking(alice):
     top_doc = crud.add_document(

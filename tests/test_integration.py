@@ -31,7 +31,7 @@ def test_full_document_lifecycle(alice, bob):
 
     # It's discoverable through multiple entry points immediately.
     assert doc.id in [d.id for d, _ in search.search_vector(alice, vec(0))]
-    assert doc.id in [d.id for d in search.search_tags(alice, "retries")]
+    assert doc.id in [d.id for d in search.search_tag(alice, "retries")]
     assert doc.id in [
         d.id for d, _ in search.search_fulltext(alice, "retry backoff")
     ]
@@ -42,7 +42,7 @@ def test_full_document_lifecycle(alice, bob):
     # Alice shares it read-only; Bob can now find and read it, but not edit it.
     crud.grant_access(alice, doc.id, "agent_bob", "read")
     alice.commit()
-    assert doc.id in [d.id for d in search.search_tags(bob, "retries")]
+    assert doc.id in [d.id for d in search.search_tag(bob, "retries")]
 
     # Alice revises the content. The old row is preserved and deprecated;
     # the new row is what search surfaces going forward.
@@ -54,7 +54,7 @@ def test_full_document_lifecycle(alice, bob):
     )
     alice.commit()
 
-    tag_hits = [d.id for d in search.search_tags(alice, "retries")]
+    tag_hits = [d.id for d in search.search_tag(alice, "retries")]
     assert doc.id not in tag_hits, "old revision should no longer surface in search"
     # (the new revision has no tags yet — authoring tags is a separate step,
     # not something update_document carries forward automatically)

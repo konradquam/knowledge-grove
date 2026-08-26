@@ -5,26 +5,31 @@ from knowledge_grove.models import Document, DocumentTag
 
 K = 60
 METHOD_WEIGHTS = {"vector": 1, "fulltext": 1, "ilike": 1}  # Weights for vector, fulltext, and ilike scores respectively
+LIMIT = 10  # Default limit for search results
 
 def search_vector(
     session: Session,
     query_embedding: list[float],
-    limit: int = 10,
+    limit: int = LIMIT,
+    tags: list[str] | None = None,
     include_deprecated: bool = False,
 ) -> list[tuple[Document, float]]:
     """Nearest neighbors by cosine similarity. Returns (document, similarity) pairs, best first."""
     distance = Document.embedding.cosine_distance(query_embedding)
     stmt = select(Document, distance).order_by(distance).limit(limit)
+    if tags:
+        filtered_doc_ids = [doc.id for doc in search_tags(session, tags, limit, include_deprecated)]
+        stmt = stmt.where(Document.id.in_(filtered_doc_ids))
     if not include_deprecated:
         stmt = stmt.where(Document.deprecated.is_(False))
 
     return [(doc, 1 - dist) for doc, dist in session.execute(stmt).all()]
 
 
-def search_tags(
+def search_tag(
     session: Session,
     tag: str,
-    limit: int = 10,
+    limit: int = LIMIT,
     include_deprecated: bool = False,
 ) -> list[Document]:
     """Exact-match documents carrying `tag` (normalized the same way add_tag stores it)."""
@@ -41,11 +46,25 @@ def search_tags(
 
     return list(session.scalars(stmt).all())
 
+def search_tags(
+    session: Session,
+    tags: list[str],
+    limit: int = LIMIT,
+    include_deprecated: bool = False,
+) -> list[Document]:
+    """Exact-match documents carrying any of the `tags` (normalized the same way add_tag stores them)."""
+    normalized_tags = [tag.strip().lower() for tag in tags]
+    docs = set()
+    for tag in normalized_tags:
+        docs.update(search_tag(session, tag, limit, include_deprecated))
+    return list(docs)
+
 
 def search_fulltext(
     session: Session,
     query_text: str,
-    limit: int = 10,
+    limit: int = LIMIT,
+    tags: list[str] | None = None,
     include_deprecated: bool = False,
 ) -> list[tuple[Document, float]]:
     """Word/stem matching over `content` via tsvector. Returns (document, ts_rank) pairs, best first."""
@@ -57,6 +76,9 @@ def search_fulltext(
         .order_by(rank.desc())
         .limit(limit)
     )
+    if tags:
+        filtered_doc_ids = [doc.id for doc in search_tags(session, tags, limit, include_deprecated)]
+        stmt = stmt.where(Document.id.in_(filtered_doc_ids))
     if not include_deprecated:
         stmt = stmt.where(Document.deprecated.is_(False))
 
@@ -66,7 +88,8 @@ def search_fulltext(
 def search_ilike(
     session: Session,
     pattern: str,
-    limit: int = 10,
+    limit: int = LIMIT,
+    tags: list[str] | None = None,
     include_deprecated: bool = False,
 ) -> list[tuple[Document, float]]:
     """Literal substring match over `content` (`%`/`_` in `pattern` are treated as literal characters,
@@ -80,6 +103,9 @@ def search_ilike(
         .order_by(similarity.desc())
         .limit(limit)
     )
+    if tags:
+        filtered_doc_ids = [doc.id for doc in search_tags(session, tags, limit, include_deprecated)]
+        stmt = stmt.where(Document.id.in_(filtered_doc_ids))
     if not include_deprecated:
         stmt = stmt.where(Document.deprecated.is_(False))
 
@@ -90,7 +116,7 @@ def weighted_search(
     query_embedding: list[float],
     query_text: str,
     pattern: str,
-    limit: int = 10,
+    limit: int = LIMIT,
     include_deprecated: bool = False,
 ) -> list[tuple[Document, float]]:
     """Combined search that waits for all three methods to complete and merges results."""
