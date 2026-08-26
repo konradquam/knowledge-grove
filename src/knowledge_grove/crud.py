@@ -1,5 +1,6 @@
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from knowledge_grove.models import Document, DocumentAccess, DocumentTag, Edge, RetrievalFeedback
@@ -31,6 +32,12 @@ def add_document(
 def get_by_id(session: Session, document_id: uuid.UUID) -> Document | None:
     """Direct fetch by primary key. Returns None if not found or not visible under RLS."""
     return session.get(Document, document_id)
+
+
+def get_edges(session: Session, document_id: uuid.UUID) -> list[Edge]:
+    """Outgoing edges from a document — what an agent could follow for more context."""
+    stmt = select(Edge).where(Edge.from_document_id == document_id)
+    return list(session.scalars(stmt).all())
 
 
 def update_document(
