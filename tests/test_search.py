@@ -331,7 +331,7 @@ def test_search_merges_results_from_multiple_methods(alice, embedding_model):
     )
     alice.commit()
 
-    results = search.weighted_search(
+    results = search.gather_context(
         session=alice,
         query_embedding=embedding_model.embed_text("fulltext"),
         query_text="fulltext",
@@ -357,7 +357,7 @@ def test_search_ranks_merged_results_from_multiple_methods(alice, embedding_mode
     )
     alice.commit()
 
-    results = search.weighted_search(
+    results = search.gather_context(
         session=alice,
         query_embedding=embedding_model.embed_text("what is the top ranking text"),
         query_text="what is the top ranking text",
@@ -383,7 +383,7 @@ def test_search_ranks_2_merged_results_from_multiple_methods(alice, embedding_mo
     )
     alice.commit()
 
-    results = search.weighted_search(
+    results = search.gather_context(
         session=alice,
         query_embedding=embedding_model.embed_text("what is the top ranking text"),
         query_text="what is the top ranking text",

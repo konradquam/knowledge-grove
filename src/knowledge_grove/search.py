@@ -111,18 +111,20 @@ def search_ilike(
 
     return [(doc, score) for doc, score in session.execute(stmt).all()]
 
-def weighted_search(
+
+def gather_context(
     session: Session,
     query_embedding: list[float],
     query_text: str,
     pattern: str,
+    tags: list[str] | None = None,
     limit: int = LIMIT,
     include_deprecated: bool = False,
 ) -> list[tuple[Document, float]]:
     """Combined search that waits for all three methods to complete and merges results."""
-    vector_results = search_vector(session, query_embedding, limit, include_deprecated)
-    fulltext_results = search_fulltext(session, query_text, limit, include_deprecated)
-    ilike_results = search_ilike(session, pattern, limit, include_deprecated)
+    vector_results = search_vector(session, query_embedding, tags=tags, limit=limit, include_deprecated=include_deprecated)
+    fulltext_results = search_fulltext(session, query_text, tags=tags, limit=limit, include_deprecated=include_deprecated)
+    ilike_results = search_ilike(session, pattern, tags=tags, limit=limit, include_deprecated=include_deprecated)
 
     # Merge results by document ID and take the best score from each method
     merged_scores = {}
