@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 
 from knowledge_grove.models import Document, DocumentTag
 
+K = 60
+METHOD_WEIGHTS = {"vector": 1, "fulltext": 1, "ilike": 1}  # Weights for vector, fulltext, and ilike scores respectively
 
 def search_vector(
     session: Session,
@@ -82,3 +84,45 @@ def search_ilike(
         stmt = stmt.where(Document.deprecated.is_(False))
 
     return [(doc, score) for doc, score in session.execute(stmt).all()]
+
+def weighted_search(
+    session: Session,
+    query_embedding: list[float],
+    query_text: str,
+    pattern: str,
+    limit: int = 10,
+    include_deprecated: bool = False,
+) -> list[tuple[Document, float]]:
+    """Combined search that waits for all three methods to complete and merges results."""
+    vector_results = search_vector(session, query_embedding, limit, include_deprecated)
+    fulltext_results = search_fulltext(session, query_text, limit, include_deprecated)
+    ilike_results = search_ilike(session, pattern, limit, include_deprecated)
+
+    # Merge results by document ID and take the best score from each method
+    merged_scores = {}
+    #add in vector results
+    for rank, (doc, score) in enumerate(vector_results):
+        if doc.id not in merged_scores:
+            merged_scores[doc.id] = (doc, adjusted_score("vector", rank+1))
+        else:
+            merged_scores[doc.id] = (doc, merged_scores[doc.id][1] + adjusted_score("vector", rank+1))
+    # add in fulltext results
+    for rank, (doc, score) in enumerate(fulltext_results):
+        if doc.id not in merged_scores:
+            merged_scores[doc.id] = (doc, adjusted_score("fulltext", rank+1))
+        else:
+            merged_scores[doc.id] = (doc, merged_scores[doc.id][1] + adjusted_score("fulltext", rank+1))
+    # add in ilike results
+    for rank, (doc, score) in enumerate(ilike_results):
+        if doc.id not in merged_scores:
+            merged_scores[doc.id] = (doc, adjusted_score("ilike", rank+1))
+        else:
+            merged_scores[doc.id] = (doc, merged_scores[doc.id][1] + adjusted_score("ilike", rank+1))
+
+    # Sort by score descending and return top `limit` results
+    sorted_results = sorted(merged_scores.values(), key=lambda x: x[1], reverse=True)
+    return sorted_results[:limit]
+
+def adjusted_score(method: str, rank: float) -> float:
+    """Adjust the score to a common scale for merging results from different search methods."""
+    return METHOD_WEIGHTS[method] / (K + rank)

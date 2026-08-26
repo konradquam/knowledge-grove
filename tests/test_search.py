@@ -90,6 +90,31 @@ def test_search_fulltext_no_match_returns_empty(alice):
 
     assert search.search_fulltext(alice, "nonexistent phrase xyz") == []
 
+def test_search_fulltext_correct_ranking(alice):
+    top_doc =crud.add_document(
+        alice, content="This is a test document and is the best among all test documents.", 
+        embedding=vec(0), owner_agent="agent_alice"
+    )
+    middle_doc = crud.add_document(
+        alice, content="this is also a test document.", embedding=vec(1), owner_agent="agent_alice"
+    )
+    bottom_doc = crud.add_document(
+        alice, content="this is a test for a document.", embedding=vec(2), owner_agent="agent_alice"
+    )
+    irrelevant_doc = crud.add_document(
+        alice, content="completely unrelated content.", embedding=vec(2), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    results = search.search_fulltext(alice, "test document")
+    result_ids = [doc.id for doc, _score in results]
+
+    assert top_doc.id == result_ids[0]
+    assert middle_doc.id == result_ids[1]
+    assert bottom_doc.id == result_ids[2]
+    assert results[0][1] > results[1][1]  # top_doc should have a higher score than middle_doc
+    assert results[1][1] > results[2][1]  # middle_doc should have a higher score than bottom_doc
+    assert irrelevant_doc.id not in result_ids
 
 def test_search_ilike_matches_literal_substring(alice):
     doc = crud.add_document(
@@ -133,3 +158,109 @@ def test_search_ilike_no_match_returns_empty(alice):
     alice.commit()
 
     assert search.search_ilike(alice, "NONEXISTENT_TOKEN") == []
+
+def test_search_ilike_ranking(alice):
+    top_doc = crud.add_document(
+        alice, content="This is a test document.", 
+        embedding=vec(0), owner_agent="agent_alice"
+    )
+    middle_doc = crud.add_document(
+        alice, content="This is a test document and is the second best among all test documents..", 
+        embedding=vec(1), owner_agent="agent_alice"
+    )
+    bottom_doc = crud.add_document(
+        alice, content="this is also a test document but it is not as good for Ilike because of length.", 
+        embedding=vec(2), owner_agent="agent_alice"
+    )
+    irrelevant_doc = crud.add_document(
+        alice, content="completely unrelated content.", embedding=vec(2), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    results = search.search_ilike(alice, "test document")
+    result_ids = [doc.id for doc, _score in results]
+
+    assert top_doc.id == result_ids[0]
+    assert middle_doc.id == result_ids[1]
+    assert bottom_doc.id == result_ids[2]
+    assert results[0][1] > results[1][1]  # top_doc should have a higher score than middle_doc
+    assert results[1][1] > results[2][1]  # middle_doc should have a higher score than bottom_doc
+    assert irrelevant_doc.id not in result_ids
+
+def test_search_merges_results_from_multiple_methods(alice):
+    doc_vector = crud.add_document(
+        alice, content="vector match", embedding=vec(0), owner_agent="agent_alice"
+    )
+    doc_fulltext = crud.add_document(
+        alice, content="fulltext match", embedding=vec(5), owner_agent="agent_alice"
+    )
+    doc_ilike = crud.add_document(
+        alice, content="ilike match", embedding=vec(10), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    results = search.weighted_search(
+        session=alice,
+        query_embedding=vec(0),
+        query_text="fulltext",
+        pattern="ilike",
+        limit=10,
+    )
+
+    # Ensure all three documents are in the results
+    result_ids = [doc.id for doc, _score in results]
+    assert doc_vector.id in result_ids
+    assert doc_fulltext.id in result_ids
+    assert doc_ilike.id in result_ids
+
+def test_search_ranks_merged_results_from_multiple_methods(alice):
+    best_doc = crud.add_document(
+        alice, content="here is the top ranking text", embedding=vec(0), owner_agent="agent_alice"
+    )
+    second_best_doc = crud.add_document(
+        alice, content="second ranking text", embedding=vec(5), owner_agent="agent_alice"
+    )
+    third_best_doc = crud.add_document(
+        alice, content="irrelevant text", embedding=vec(10), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    results = search.weighted_search(
+        session=alice,
+        query_embedding=vec(0),
+        query_text="what is the top ranking text",
+        pattern="ranking text",
+        limit=10,
+    )
+
+    # Ensure all three documents are in the results
+    result_ids = [doc.id for doc, _score in results]
+    assert best_doc.id == result_ids[0]
+    assert second_best_doc.id == result_ids[1]
+    assert third_best_doc.id == result_ids[2]
+
+def test_search_ranks_2_merged_results_from_multiple_methods(alice):
+    best_doc = crud.add_document(
+        alice, content="here is the top ranking text", embedding=vec(0), owner_agent="agent_alice"
+    )
+    second_best_doc = crud.add_document(
+        alice, content="second ranking text", embedding=vec(5), owner_agent="agent_alice"
+    )
+    third_best_doc = crud.add_document(
+        alice, content="irrelevant text", embedding=vec(10), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    results = search.weighted_search(
+        session=alice,
+        query_embedding=vec(5),
+        query_text="what is the top ranking text",
+        pattern="top ranking",
+        limit=10,
+    )
+
+    # Ensure all three documents are in the results
+    result_ids = [doc.id for doc, _score in results]
+    assert best_doc.id == result_ids[0]
+    assert second_best_doc.id == result_ids[1]
+    assert third_best_doc.id == result_ids[2]
