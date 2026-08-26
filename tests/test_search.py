@@ -1,35 +1,35 @@
 from knowledge_grove import crud, search
 
-from conftest import vec
+from conftest import embedding_model, vec
 
 
-def test_search_vector_ranks_nearest_first(alice):
+def test_search_vector_ranks_nearest_first(alice, embedding_model):
     near = crud.add_document(
-        alice, content="near match", embedding=vec(0), owner_agent="agent_alice"
+        alice, content="near match", embedding=embedding_model.embed_text("near match"), owner_agent="agent_alice"
     )
     far = crud.add_document(
-        alice, content="far match", embedding=vec(5), owner_agent="agent_alice"
+        alice, content="far match", embedding=embedding_model.embed_text("far match"), owner_agent="agent_alice"
     )
     alice.commit()
 
-    results = search.search_vector(alice, vec(0), limit=5)
+    results = search.search_vector(alice, embedding_model.embed_text("near match"), limit=5)
     ids_in_order = [doc.id for doc, _score in results]
 
     assert ids_in_order.index(near.id) < ids_in_order.index(far.id)
 
 
-def test_search_vector_excludes_deprecated_by_default(alice):
+def test_search_vector_excludes_deprecated_by_default(alice, embedding_model):
     original = crud.add_document(
-        alice, content="v1", embedding=vec(0), owner_agent="agent_alice"
+        alice, content="v1", embedding=embedding_model.embed_text("v1"), owner_agent="agent_alice"
     )
     alice.commit()
-    crud.update_document(alice, original.id, content="v2", embedding=vec(0))
+    crud.update_document(alice, original.id, content="v2", embedding=embedding_model.embed_text("v2"))
     alice.commit()
 
-    results = search.search_vector(alice, vec(0), limit=5)
+    results = search.search_vector(alice, embedding_model.embed_text("v1"), limit=5)
     assert original.id not in [doc.id for doc, _ in results]
 
-    results_incl = search.search_vector(alice, vec(0), limit=5, include_deprecated=True)
+    results_incl = search.search_vector(alice, embedding_model.embed_text("v1"), limit=5, include_deprecated=True)
     assert original.id in [doc.id for doc, _ in results_incl]
 
 
@@ -187,21 +187,21 @@ def test_search_ilike_ranking(alice):
     assert results[1][1] > results[2][1]  # middle_doc should have a higher score than bottom_doc
     assert irrelevant_doc.id not in result_ids
 
-def test_search_merges_results_from_multiple_methods(alice):
+def test_search_merges_results_from_multiple_methods(alice, embedding_model):
     doc_vector = crud.add_document(
-        alice, content="vector match", embedding=vec(0), owner_agent="agent_alice"
+        alice, content="vector match", embedding=embedding_model.embed_text("vector match"), owner_agent="agent_alice"
     )
     doc_fulltext = crud.add_document(
-        alice, content="fulltext match", embedding=vec(5), owner_agent="agent_alice"
+        alice, content="fulltext match", embedding=embedding_model.embed_text("fulltext match"), owner_agent="agent_alice"
     )
     doc_ilike = crud.add_document(
-        alice, content="ilike match", embedding=vec(10), owner_agent="agent_alice"
+        alice, content="ilike match", embedding=embedding_model.embed_text("ilike match"), owner_agent="agent_alice"
     )
     alice.commit()
 
     results = search.weighted_search(
         session=alice,
-        query_embedding=vec(0),
+        query_embedding=embedding_model.embed_text("fulltext"),
         query_text="fulltext",
         pattern="ilike",
         limit=10,
@@ -213,21 +213,21 @@ def test_search_merges_results_from_multiple_methods(alice):
     assert doc_fulltext.id in result_ids
     assert doc_ilike.id in result_ids
 
-def test_search_ranks_merged_results_from_multiple_methods(alice):
+def test_search_ranks_merged_results_from_multiple_methods(alice, embedding_model):
     best_doc = crud.add_document(
-        alice, content="here is the top ranking text", embedding=vec(0), owner_agent="agent_alice"
+        alice, content="here is the top ranking text", embedding=embedding_model.embed_text("here is the top ranking text"), owner_agent="agent_alice"
     )
     second_best_doc = crud.add_document(
-        alice, content="second ranking text", embedding=vec(5), owner_agent="agent_alice"
+        alice, content="second ranking text", embedding=embedding_model.embed_text("second ranking text"), owner_agent="agent_alice"
     )
     third_best_doc = crud.add_document(
-        alice, content="irrelevant text", embedding=vec(10), owner_agent="agent_alice"
+        alice, content="irrelevant text", embedding=embedding_model.embed_text("irrelevant text"), owner_agent="agent_alice"
     )
     alice.commit()
 
     results = search.weighted_search(
         session=alice,
-        query_embedding=vec(0),
+        query_embedding=embedding_model.embed_text("what is the top ranking text"),
         query_text="what is the top ranking text",
         pattern="ranking text",
         limit=10,
@@ -239,21 +239,21 @@ def test_search_ranks_merged_results_from_multiple_methods(alice):
     assert second_best_doc.id == result_ids[1]
     assert third_best_doc.id == result_ids[2]
 
-def test_search_ranks_2_merged_results_from_multiple_methods(alice):
+def test_search_ranks_2_merged_results_from_multiple_methods(alice, embedding_model):
     best_doc = crud.add_document(
-        alice, content="here is the top ranking text", embedding=vec(0), owner_agent="agent_alice"
+        alice, content="here is the top ranking text", embedding=embedding_model.embed_text("here is the top ranking text"), owner_agent="agent_alice"
     )
     second_best_doc = crud.add_document(
-        alice, content="second ranking text", embedding=vec(5), owner_agent="agent_alice"
+        alice, content="second ranking text", embedding=embedding_model.embed_text("second ranking text"), owner_agent="agent_alice"
     )
     third_best_doc = crud.add_document(
-        alice, content="irrelevant text", embedding=vec(10), owner_agent="agent_alice"
+        alice, content="irrelevant text", embedding=embedding_model.embed_text("irrelevant text"), owner_agent="agent_alice"
     )
     alice.commit()
 
     results = search.weighted_search(
         session=alice,
-        query_embedding=vec(5),
+        query_embedding=embedding_model.embed_text("what is the top ranking text"),
         query_text="what is the top ranking text",
         pattern="top ranking",
         limit=10,
