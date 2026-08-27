@@ -66,6 +66,7 @@ def test_all_crud_tools_are_registered(mcp_server_module):
     assert tool_names == {
         "gather_context",
         "add_document",
+        "add_sequential_documents",
         "get_by_id",
         "get_edges",
         "update_document",
@@ -94,6 +95,65 @@ def test_add_document_tool_auto_embeds_and_returns_json_serializable_dict(mcp_se
     # It's genuinely embedded, not a stub -- prove it by finding it via search.
     hits = mcp_server_module.gather_context_tool(query_text="exponential backoff", pattern="backoff")
     assert any(h["id"] == result["id"] for h in hits)
+
+
+def test_add_sequential_documents_tool_is_registered(mcp_server_module):
+    tools = asyncio.run(mcp_server_module.mcp_server.list_tools())
+    tool_names = [t.name for t in tools]
+    assert "add_sequential_documents" in tool_names
+
+
+def test_add_sequential_documents_tool_auto_embeds_and_links_prev_edges(mcp_server_module):
+    # No embedding parameter anywhere -- contents in, dicts out.
+    docs = mcp_server_module.add_sequential_documents_tool(
+        contents=["chunk one", "chunk two", "chunk three"],
+        owner_agent="agent_alice",
+    )
+    json.dumps(docs)  # must not raise
+
+    assert [d["content"] for d in docs] == ["chunk one", "chunk two", "chunk three"]
+
+    edges = mcp_server_module.get_edges_tool(docs[1]["id"])
+    assert len(edges) == 1
+    assert edges[0]["edge_type"] == "prev"
+    assert edges[0]["to_document_id"] == docs[0]["id"]
+
+    # It's genuinely embedded, not a stub -- prove it by finding it via search.
+    hits = mcp_server_module.gather_context_tool(query_text="chunk two", pattern="chunk two")
+    assert any(h["id"] == docs[1]["id"] for h in hits)
+
+
+def test_add_sequential_documents_tool_first_document_has_no_edges(mcp_server_module):
+    docs = mcp_server_module.add_sequential_documents_tool(
+        contents=["only one"], owner_agent="agent_alice",
+    )
+
+    assert mcp_server_module.get_edges_tool(docs[0]["id"]) == []
+
+
+def test_add_sequential_documents_tool_uses_given_descriptions(mcp_server_module):
+    docs = mcp_server_module.add_sequential_documents_tool(
+        contents=["c0", "c1"],
+        owner_agent="agent_alice",
+        descriptions=[None, "second chunk"],
+    )
+
+    edges = mcp_server_module.get_edges_tool(docs[1]["id"])
+    assert edges[0]["description"] == "second chunk"
+
+
+def test_add_sequential_documents_tool_applies_summaries_and_source_urls(mcp_server_module):
+    docs = mcp_server_module.add_sequential_documents_tool(
+        contents=["c0", "c1"],
+        owner_agent="agent_alice",
+        summaries=["summary 0", "summary 1"],
+        source_urls=["https://example.com/0", "https://example.com/1"],
+    )
+
+    assert docs[0]["summary"] == "summary 0"
+    assert docs[0]["source_url"] == "https://example.com/0"
+    assert docs[1]["summary"] == "summary 1"
+    assert docs[1]["source_url"] == "https://example.com/1"
 
 
 def test_get_by_id_tool_returns_document(mcp_server_module):
@@ -160,6 +220,18 @@ def test_add_edge_tool_to_external_url(mcp_server_module):
 
     assert edge["external_url"] == "https://example.com/tool.py"
     assert edge["to_document_id"] is None
+
+
+def test_add_edge_tool_description_is_optional(mcp_server_module):
+    doc_a = mcp_server_module.add_document_tool(content="doc a", owner_agent="agent_alice")
+    doc_b = mcp_server_module.add_document_tool(content="doc b", owner_agent="agent_alice")
+
+    edge = mcp_server_module.add_edge_tool(
+        from_document_id=doc_a["id"], edge_type="related", to_document_id=doc_b["id"],
+    )
+    json.dumps(edge)  # must not raise
+
+    assert edge["description"] is None
 
 
 def test_grant_and_revoke_access_tools(mcp_server_module):

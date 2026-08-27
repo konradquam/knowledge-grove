@@ -1,4 +1,5 @@
 import os
+from enum import StrEnum
 
 # Dimension of the `embedding` / `summary_embedding` vector columns.
 # Baked into the schema at migration time (pgvector requires a fixed size per
@@ -11,7 +12,14 @@ EMBEDDING_DIM = int(os.environ.get("KNOWLEDGE_GROVE_EMBEDDING_DIM", 768))
 # Postgres enum values. Defined once here so models.py (SQLAlchemy Enum
 # types) and the initial migration (raw CREATE TYPE ... AS ENUM statements)
 # can't drift apart from each other.
-EDGE_TYPES = ("next", "prev", "source", "tool", "related", "supersedes")
 PERMISSIONS = ("read", "write")
 SOURCE_METHODS = ("vector", "tags", "fulltext", "ilike", "id")
 JUDGED_BY_VALUES = ("explicit_llm", "implicit_usage")
+
+class EdgeType(StrEnum):
+    NEXT = "next"
+    PREV = "prev"
+    SOURCE = "source"
+    TOOL = "tool"
+    RELATED = "related"
+    SUPERSEDES = "supersedes"

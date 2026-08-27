@@ -37,7 +37,7 @@ from knowledge_grove.models import (
     Base,
 )
 from knowledge_grove.constants import (
-    EDGE_TYPES,
+    EdgeType,
     PERMISSIONS,
     SOURCE_METHODS,
     JUDGED_BY_VALUES,
@@ -61,7 +61,7 @@ def upgrade() -> None:
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
 
-    op.execute(_create_enum_sql("edge_type", EDGE_TYPES))
+    op.execute(_create_enum_sql("edge_type", tuple(e.value for e in EdgeType)))
     op.execute(_create_enum_sql("permission", PERMISSIONS))
     op.execute(_create_enum_sql("source_method", SOURCE_METHODS))
     op.execute(_create_enum_sql("judged_by", JUDGED_BY_VALUES))
