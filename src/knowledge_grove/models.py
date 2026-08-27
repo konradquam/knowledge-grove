@@ -19,7 +19,7 @@ from sqlalchemy.dialects.postgresql import TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from knowledge_grove.constants import (
-    EDGE_TYPES,
+    EdgeType,
     EMBEDDING_DIM,
     JUDGED_BY_VALUES,
     PERMISSIONS,
@@ -115,7 +115,7 @@ class DocumentTag(Base):
     __table_args__ = (Index("ix_document_tags_tag", "tag"),)
 
 
-edge_type_enum = Enum(*EDGE_TYPES, name="edge_type", create_type=False)
+edge_type_enum = Enum(*(e.value for e in EdgeType), name="edge_type", create_type=False)
 
 
 class Edge(Base):
@@ -132,7 +132,10 @@ class Edge(Base):
     )
     external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     edge_type: Mapped[str] = mapped_column(edge_type_enum, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
+    # Short note on what this edge means / what's at the endpoint. Optional --
+    # e.g. a `prev` edge in a chunk sequence is self-explanatory and doesn't
+    # need one.
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped["DateTime"] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

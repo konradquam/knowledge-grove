@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from knowledge_grove.models import Document, DocumentAccess, DocumentTag, Edge, RetrievalFeedback
 from knowledge_grove.utils.embedding import get_embedding_model
+from knowledge_grove.constants import EdgeType, PERMISSIONS
 
 
 def add_document(
@@ -40,6 +41,57 @@ def add_document(
     session.flush()
     return document
 
+def add_sequential_documents(
+    session: Session,
+    contents: list[str],
+    owner_agent: str,
+    embeddings: list[list[float]] | None = None,
+    summaries: list[str] | None = None,
+    summary_embeddings: list[list[float]] | None = None,
+    source_urls: list[str] | None = None,
+    descriptions: list[str] | None = None,
+) -> list[Document]:
+    """Insert a sequence of new chunk rows, linking each to the previous one with a 'follows' edge.
+
+    `embeddings` (and `summary_embeddings`, when `summaries` is given) are computed
+    automatically from the text if not supplied — pass them explicitly only if
+    you have a reason to override the default model (a different model, or a
+    precomputed batch embedding).
+    """
+    documents = []
+    previous_document_id = None
+
+    for i, content in enumerate(contents):
+        embedding = get_embedding_model().embed_text(content) if embeddings is None else embeddings[i]
+        summary = summaries[i] if summaries is not None else None
+        summary_embedding = get_embedding_model().embed_text(summary) if summary is not None and summary_embeddings is None else (summary_embeddings[i] if summary_embeddings is not None else None)
+        source_url = source_urls[i] if source_urls is not None else None
+        description = descriptions[i] if descriptions is not None else None
+
+        document = add_document(
+            session,
+            content=content,
+            owner_agent=owner_agent,
+            embedding=embedding,
+            summary=summary,
+            summary_embedding=summary_embedding,
+            source_url=source_url,
+        )
+        documents.append(document)
+
+        if previous_document_id is not None:
+            add_edge(
+                session,
+                from_document_id=document.id,
+                edge_type=EdgeType.PREV,
+                description=description,
+                to_document_id=previous_document_id,
+            )
+
+        previous_document_id = document.id
+
+    return documents
+
 
 def get_by_id(session: Session, document_id: uuid.UUID) -> Document | None:
     """Direct fetch by primary key. Returns None if not found or not visible under RLS."""
@@ -60,6 +112,7 @@ def update_document(
     summary: str | None = None,
     summary_embedding: list[float] | None = None,
     source_url: str | None = None,
+    description: str | None = None,
 ) -> Document:
     """Create a new revision of `document_id` rather than mutating it in place.
 
@@ -90,8 +143,8 @@ def update_document(
     add_edge(
         session,
         from_document_id=new_document.id,
-        edge_type="supersedes",
-        description="Supersedes a previous revision",
+        edge_type=EdgeType.SUPERSEDES,
+        description=description,
         to_document_id=old_document.id,
     )
 
@@ -116,13 +169,14 @@ def add_edge(
     session: Session,
     from_document_id: uuid.UUID,
     edge_type: str,
-    description: str,
+    description: str | None = None,
     to_document_id: uuid.UUID | None = None,
     external_url: str | None = None,
 ) -> Edge:
     """Attach a relationship from `from_document_id` to either another document or an external URL.
 
-    Exactly one of `to_document_id` / `external_url` must be set.
+    Exactly one of `to_document_id` / `external_url` must be set. `description`
+    is a short optional note on what this edge means / what's at the endpoint.
     """
     if (to_document_id is None) == (external_url is None):
         raise ValueError("exactly one of to_document_id or external_url must be set")

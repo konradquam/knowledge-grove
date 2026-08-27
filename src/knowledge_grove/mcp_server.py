@@ -83,6 +83,24 @@ def add_document_tool(
         session.commit()
         return _document_to_dict(doc)
 
+def add_sequential_documents_tool(
+    contents: list[str],
+    owner_agent: str,
+    summaries: list[str] | None = None,
+    source_urls: list[str] | None = None,
+    descriptions: list[str] | None = None,
+) -> list[dict]:
+    """Add a sequence of new documents, linking each to the previous one with a 'follows' edge.
+    The embeddings are computed automatically from `contents` (and from `summaries`, if given)
+    — there's no vector to supply."""
+    with get_session(engine) as session:
+        docs = crud.add_sequential_documents(
+            session, contents=contents, owner_agent=owner_agent,
+            summaries=summaries, source_urls=source_urls, descriptions=descriptions,
+        )
+        session.commit()
+        return [_document_to_dict(doc) for doc in docs]
+
 
 def get_by_id_tool(document_id: str) -> dict | None:
     """Fetch a document by id."""
@@ -126,7 +144,7 @@ def add_tag_tool(document_id: str, tag: str, description: str) -> dict:
 def add_edge_tool(
     from_document_id: str,
     edge_type: str,
-    description: str,
+    description: str | None = None,
     to_document_id: str | None = None,
     external_url: str | None = None,
 ) -> dict:
@@ -181,6 +199,7 @@ def log_feedback_tool(
 for _fn, _name, _description in [
     (gather_context_tool, "gather_context", "Combined search that waits for all three methods to complete and merges results."),
     (add_document_tool, "add_document", "Add a new document; the embedding is computed automatically."),
+    (add_sequential_documents_tool, "add_sequential_documents", "Add a sequence of documents, each linked to the previous one with a 'prev' edge; embeddings are computed automatically."),
     (get_by_id_tool, "get_by_id", "Fetch a document by id."),
     (get_edges_tool, "get_edges", "Outgoing edges from a document."),
     (update_document_tool, "update_document", "Create a new revision of a document; the embedding is computed automatically."),
