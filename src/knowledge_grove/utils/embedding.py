@@ -1,5 +1,6 @@
 from sentence_transformers import SentenceTransformer 
 from knowledge_grove.constants import EMBEDDING_DIM
+from functools import lru_cache
 
 class EmbeddingModel:
     def __init__(self, model_name: str = 'intfloat/e5-base-v2'):
@@ -18,3 +19,8 @@ class EmbeddingModel:
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts using the specified model."""
         return self._model.encode(texts).tolist()
+
+@lru_cache(maxsize=1)
+def get_embedding_model() -> EmbeddingModel:
+    """Return a cached instance of the embedding model."""
+    return EmbeddingModel()

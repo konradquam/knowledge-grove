@@ -2,6 +2,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from knowledge_grove.models import Document, DocumentTag
+from knowledge_grove.utils.embedding import get_embedding_model
 
 K = 60
 METHOD_WEIGHTS = {"vector": 1, "fulltext": 1, "ilike": 1}  # Weights for vector, fulltext, and ilike scores respectively
@@ -9,12 +10,22 @@ LIMIT = 10  # Default limit for search results
 
 def search_vector(
     session: Session,
-    query_embedding: list[float],
+    query_embedding: list[float] | None = None,
+    query_text: str | None = None,
     limit: int = LIMIT,
     tags: list[str] | None = None,
     include_deprecated: bool = False,
 ) -> list[tuple[Document, float]]:
-    """Nearest neighbors by cosine similarity. Returns (document, similarity) pairs, best first."""
+    """Nearest neighbors by cosine similarity. Returns (document, similarity) pairs, best first.
+
+    Pass either `query_embedding` directly, or `query_text` to have it embedded
+    automatically. If both are given, `query_embedding` wins.
+    """
+    if query_embedding is None:
+        if query_text is None:
+            raise ValueError("search_vector requires either query_embedding or query_text")
+        query_embedding = get_embedding_model().embed_text(query_text)
+
     distance = Document.embedding.cosine_distance(query_embedding)
     stmt = select(Document, distance).order_by(distance).limit(limit)
     if tags:
@@ -114,15 +125,22 @@ def search_ilike(
 
 def gather_context(
     session: Session,
-    query_embedding: list[float],
     query_text: str,
     pattern: str,
     tags: list[str] | None = None,
     limit: int = LIMIT,
     include_deprecated: bool = False,
 ) -> list[tuple[Document, float]]:
-    """Combined search that waits for all three methods to complete and merges results."""
-    vector_results = search_vector(session, query_embedding, tags=tags, limit=limit, include_deprecated=include_deprecated)
+    """Combined search that waits for all three methods to complete and merges results.
+
+    `query_embedding` is optional — if omitted, the vector-search leg embeds
+    `query_text` automatically, so one query string can drive all three methods.
+    """
+    query_embedding = get_embedding_model().embed_text(query_text)
+    vector_results = search_vector(
+        session, query_embedding=query_embedding, query_text=query_text,
+        tags=tags, limit=limit, include_deprecated=include_deprecated,
+    )
     fulltext_results = search_fulltext(session, query_text, tags=tags, limit=limit, include_deprecated=include_deprecated)
     ilike_results = search_ilike(session, pattern, tags=tags, limit=limit, include_deprecated=include_deprecated)
 

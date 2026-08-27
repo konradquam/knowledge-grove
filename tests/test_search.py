@@ -1,3 +1,5 @@
+import pytest
+
 from knowledge_grove import crud, search
 
 from conftest import embedding_model, vec
@@ -16,6 +18,36 @@ def test_search_vector_ranks_nearest_first(alice, embedding_model):
     ids_in_order = [doc.id for doc, _score in results]
 
     assert ids_in_order.index(near.id) < ids_in_order.index(far.id)
+
+
+def test_search_vector_query_text_auto_embeds(alice, embedding_model):
+    doc = crud.add_document(
+        alice,
+        content="Retries should use exponential backoff.",
+        embedding=embedding_model.embed_text("Retries should use exponential backoff."),
+        owner_agent="agent_alice",
+    )
+    alice.commit()
+
+    results = search.search_vector(alice, query_text="exponential backoff retries")
+    assert doc.id in [d.id for d, _score in results]
+
+
+def test_search_vector_explicit_embedding_wins_over_query_text(alice):
+    near = crud.add_document(
+        alice, content="near match", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    # query_text is nonsense that wouldn't embed anywhere near vec(0), but an
+    # explicit query_embedding is also given and should take precedence
+    results = search.search_vector(alice, query_embedding=vec(0), query_text="completely unrelated nonsense")
+    assert near.id in [d.id for d, _score in results]
+
+
+def test_search_vector_raises_without_embedding_or_text(alice):
+    with pytest.raises(ValueError):
+        search.search_vector(alice)
 
 
 def test_search_vector_excludes_deprecated_by_default(alice, embedding_model):
@@ -333,7 +365,6 @@ def test_search_merges_results_from_multiple_methods(alice, embedding_model):
 
     results = search.gather_context(
         session=alice,
-        query_embedding=embedding_model.embed_text("fulltext"),
         query_text="fulltext",
         pattern="ilike",
         limit=10,
@@ -344,6 +375,33 @@ def test_search_merges_results_from_multiple_methods(alice, embedding_model):
     assert doc_vector.id in result_ids
     assert doc_fulltext.id in result_ids
     assert doc_ilike.id in result_ids
+
+
+def test_gather_context_auto_embeds_from_query_text(alice, embedding_model):
+    doc_vector = crud.add_document(
+        alice, content="vector match", embedding=embedding_model.embed_text("vector match"), owner_agent="agent_alice"
+    )
+    doc_fulltext = crud.add_document(
+        alice, content="fulltext match", embedding=embedding_model.embed_text("fulltext match"), owner_agent="agent_alice"
+    )
+    doc_ilike = crud.add_document(
+        alice, content="ilike match", embedding=embedding_model.embed_text("ilike match"), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    # No query_embedding given at all -- vector leg should auto-embed query_text
+    results = search.gather_context(
+        session=alice,
+        query_text="fulltext",
+        pattern="ilike",
+        limit=10,
+    )
+
+    result_ids = [doc.id for doc, _score in results]
+    assert doc_vector.id in result_ids
+    assert doc_fulltext.id in result_ids
+    assert doc_ilike.id in result_ids
+
 
 def test_search_ranks_merged_results_from_multiple_methods(alice, embedding_model):
     best_doc = crud.add_document(
@@ -359,7 +417,6 @@ def test_search_ranks_merged_results_from_multiple_methods(alice, embedding_mode
 
     results = search.gather_context(
         session=alice,
-        query_embedding=embedding_model.embed_text("what is the top ranking text"),
         query_text="what is the top ranking text",
         pattern="ranking text",
         limit=10,
@@ -385,7 +442,6 @@ def test_search_ranks_2_merged_results_from_multiple_methods(alice, embedding_mo
 
     results = search.gather_context(
         session=alice,
-        query_embedding=embedding_model.embed_text("what is the top ranking text"),
         query_text="what is the top ranking text",
         pattern="top ranking",
         limit=10,
