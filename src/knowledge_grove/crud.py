@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from knowledge_grove.models import Document, DocumentAccess, DocumentTag, Edge, RetrievalFeedback
 from knowledge_grove.utils.embedding import get_embedding_model
 from knowledge_grove.constants import EdgeType, PERMISSIONS
+from knowledge_grove.utils.chunking import chunk_markdown
 
 
 def add_document(
@@ -79,6 +80,7 @@ def add_sequential_documents(
         )
         documents.append(document)
 
+        # If this is not the first document, create a 'follows' edge from the previous document to this one.
         if previous_document_id is not None:
             add_edge(
                 session,
@@ -92,6 +94,18 @@ def add_sequential_documents(
 
     return documents
 
+def add_raw_document(session: Session, document: str, owner_agent: str) -> list[Document]:
+    """Insert a raw document string, chunking it into smaller pieces."""
+    chunked_documents = chunk_markdown(document)
+    return add_sequential_documents(session, contents=chunked_documents, owner_agent=owner_agent)
+
+def add_raw_documents(session: Session, documents: list[str], owner_agent: str) -> list[list[Document]]:
+    """Insert a list of raw document strings, chunking each into smaller pieces."""
+    documents_list = []
+    for document in documents:
+        document_chunks = add_raw_document(session, document, owner_agent)
+        documents_list.append(document_chunks)
+    return documents_list
 
 def get_by_id(session: Session, document_id: uuid.UUID) -> Document | None:
     """Direct fetch by primary key. Returns None if not found or not visible under RLS."""
