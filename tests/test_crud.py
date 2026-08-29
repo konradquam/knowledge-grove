@@ -553,6 +553,57 @@ def test_add_raw_documents_empty_list_returns_empty(alice):
     assert crud.add_raw_documents(alice, [], owner_agent="agent_alice") == []
 
 
+def test_add_raw_document_applies_source_url_to_every_chunk(alice):
+    raw = "# Heading\n\npara one\n\npara two\n"
+    docs = crud.add_raw_document(
+        alice, raw, owner_agent="agent_alice", source_url="https://example.com/doc.md"
+    )
+    alice.commit()
+
+    assert len(docs) > 1, "test needs multiple chunks to prove the source_url isn't just on the first one"
+    assert all(doc.source_url == "https://example.com/doc.md" for doc in docs)
+
+
+def test_add_raw_document_source_url_defaults_to_none(alice):
+    docs = crud.add_raw_document(alice, "para one\n\npara two\n", owner_agent="agent_alice")
+    alice.commit()
+
+    assert all(doc.source_url is None for doc in docs)
+
+
+def test_add_raw_documents_applies_source_urls_per_document(alice):
+    raw_docs = ["# Doc A\n\npara a\n", "# Doc B\n\npara b\n"]
+    result = crud.add_raw_documents(
+        alice,
+        raw_docs,
+        owner_agent="agent_alice",
+        source_urls=["https://example.com/a.md", "https://example.com/b.md"],
+    )
+    alice.commit()
+
+    assert all(doc.source_url == "https://example.com/a.md" for doc in result[0])
+    assert all(doc.source_url == "https://example.com/b.md" for doc in result[1])
+
+
+def test_add_raw_documents_source_urls_can_mix_none_and_given(alice):
+    raw_docs = ["para a\n", "para b\n"]
+    result = crud.add_raw_documents(
+        alice, raw_docs, owner_agent="agent_alice", source_urls=[None, "https://example.com/b.md"],
+    )
+    alice.commit()
+
+    assert all(doc.source_url is None for doc in result[0])
+    assert all(doc.source_url == "https://example.com/b.md" for doc in result[1])
+
+
+def test_add_raw_documents_source_urls_defaults_to_none_when_omitted(alice):
+    raw_docs = ["para a\n", "para b\n"]
+    result = crud.add_raw_documents(alice, raw_docs, owner_agent="agent_alice")
+    alice.commit()
+
+    assert all(doc.source_url is None for chunks in result for doc in chunks)
+
+
 def test_log_feedback(alice):
     doc = crud.add_document(
         alice, content="feedback target", embedding=vec(0), owner_agent="agent_alice"
