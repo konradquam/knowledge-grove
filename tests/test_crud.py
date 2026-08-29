@@ -465,6 +465,94 @@ def test_add_sequential_documents_empty_list_returns_empty(alice):
     assert crud.add_sequential_documents(alice, contents=[], owner_agent="agent_alice") == []
 
 
+def test_add_raw_document_chunks_by_heading_and_creates_prev_edges(alice):
+    raw = "# Heading One\n\npara one\n\npara two\n\n# Heading Two\npara three\n"
+    docs = crud.add_raw_document(alice, raw, owner_agent="agent_alice")
+    alice.commit()
+
+    assert [d.content for d in docs] == [
+        "# Heading One\n\npara one",
+        "para two",
+        "# Heading Two\npara three",
+    ]
+
+    edge_1_to_0 = alice.scalars(
+        select(Edge).where(Edge.from_document_id == docs[1].id)
+    ).one()
+    assert edge_1_to_0.to_document_id == docs[0].id
+    assert edge_1_to_0.edge_type == "prev"
+
+    edge_2_to_1 = alice.scalars(
+        select(Edge).where(Edge.from_document_id == docs[2].id)
+    ).one()
+    assert edge_2_to_1.to_document_id == docs[1].id
+
+    assert alice.scalars(select(Edge).where(Edge.from_document_id == docs[0].id)).all() == []
+
+
+def test_add_raw_document_sets_owner_agent_on_every_chunk(alice):
+    raw = "para one\n\npara two\n"
+    docs = crud.add_raw_document(alice, raw, owner_agent="agent_alice")
+    alice.commit()
+
+    assert all(doc.owner_agent == "agent_alice" for doc in docs)
+
+
+def test_add_raw_document_auto_embeds_every_chunk(alice, embedding_model):
+    raw = "para one\n\npara two\n"
+    docs = crud.add_raw_document(alice, raw, owner_agent="agent_alice")
+    alice.commit()
+
+    for doc in docs:
+        assert doc.embedding is not None
+        assert len(doc.embedding) == len(embedding_model.embed_text("anything"))
+
+
+def test_add_raw_document_single_chunk_creates_no_edges(alice):
+    docs = crud.add_raw_document(alice, "just one paragraph, no breaks\n", owner_agent="agent_alice")
+    alice.commit()
+
+    assert len(docs) == 1
+    assert alice.scalars(select(Edge).where(Edge.from_document_id == docs[0].id)).all() == []
+
+
+def test_add_raw_document_empty_content_returns_empty_list(alice):
+    assert crud.add_raw_document(alice, "", owner_agent="agent_alice") == []
+
+
+def test_add_raw_documents_returns_one_sublist_per_source_document(alice):
+    raw_docs = ["# Doc A\n\npara a\n", "# Doc B\n\npara b\n"]
+    result = crud.add_raw_documents(alice, raw_docs, owner_agent="agent_alice")
+    alice.commit()
+
+    assert len(result) == 2
+    assert [d.content for d in result[0]] == ["# Doc A\n\npara a"]
+    assert [d.content for d in result[1]] == ["# Doc B\n\npara b"]
+
+
+def test_add_raw_documents_does_not_link_edges_across_source_documents(alice):
+    raw_docs = ["# Doc A\n\npara a1\n\npara a2\n", "# Doc B\n\npara b1\n"]
+    result = crud.add_raw_documents(alice, raw_docs, owner_agent="agent_alice")
+    alice.commit()
+
+    doc_b_first_chunk = result[1][0]
+    assert alice.scalars(
+        select(Edge).where(Edge.from_document_id == doc_b_first_chunk.id)
+    ).all() == []
+
+
+def test_add_raw_documents_sets_owner_agent_on_every_chunk(alice):
+    raw_docs = ["para a\n", "para b\n"]
+    result = crud.add_raw_documents(alice, raw_docs, owner_agent="agent_alice")
+    alice.commit()
+
+    assert all(doc.owner_agent == "agent_alice" for chunks in result for doc in chunks)
+
+
+def test_add_raw_documents_empty_list_returns_empty(alice):
+    assert crud.add_raw_documents(alice, [], owner_agent="agent_alice") == []
+
+
 def test_log_feedback(alice):
     doc = crud.add_document(
         alice, content="feedback target", embedding=vec(0), owner_agent="agent_alice"
