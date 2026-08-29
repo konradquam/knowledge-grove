@@ -94,16 +94,17 @@ def add_sequential_documents(
 
     return documents
 
-def add_raw_document(session: Session, document: str, owner_agent: str) -> list[Document]:
+def add_raw_document(session: Session, document: str, owner_agent: str, source_url: str | None = None) -> list[Document]:
     """Insert a raw document string, chunking it into smaller pieces."""
     chunked_documents = chunk_markdown(document)
-    return add_sequential_documents(session, contents=chunked_documents, owner_agent=owner_agent)
+    return add_sequential_documents(session, contents=chunked_documents, owner_agent=owner_agent, source_urls=[source_url] * len(chunked_documents) if source_url is not None else None)
 
-def add_raw_documents(session: Session, documents: list[str], owner_agent: str) -> list[list[Document]]:
+def add_raw_documents(session: Session, documents: list[str], owner_agent: str, source_urls: list[str | None] | None = None) -> list[list[Document]]:
     """Insert a list of raw document strings, chunking each into smaller pieces."""
     documents_list = []
-    for document in documents:
-        document_chunks = add_raw_document(session, document, owner_agent)
+    for i, document in enumerate(documents):
+        source_url = source_urls[i] if source_urls is not None else None
+        document_chunks = add_raw_document(session, document, owner_agent, source_url)
         documents_list.append(document_chunks)
     return documents_list
 
