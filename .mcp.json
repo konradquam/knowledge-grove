@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "knowledge-grove": {
+      "command": "/Users/konradquam/projects/knowledge-grove/.venv/bin/python",
+      "args": ["-m", "knowledge_grove.mcp_server"],
+      "env": {
+        "KNOWLEDGE_GROVE_DSN": "postgresql+psycopg://agent_local:localpass@localhost:5433/postgres"
+      }
+    }
+  }
+}

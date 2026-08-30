@@ -41,6 +41,7 @@ from knowledge_grove.constants import (
     PERMISSIONS,
     SOURCE_METHODS,
     JUDGED_BY_VALUES,
+    SHARED_READER,
 )
 
 
@@ -263,6 +264,11 @@ def upgrade() -> None:
                   AND documents.owner_agent = current_user
             )
         )
+        """
+    )
+    op.execute(
+        f"""
+        CREATE ROLE {SHARED_READER}
         """
     )
 
