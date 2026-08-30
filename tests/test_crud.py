@@ -314,7 +314,9 @@ def test_revoke_access_removes_matching_grant(alice):
     alice.commit()
 
     remaining = alice.scalars(
-        select(DocumentAccess).where(DocumentAccess.document_id == doc.id)
+        select(DocumentAccess).where(
+            DocumentAccess.document_id == doc.id, DocumentAccess.grantee_role == "agent_bob"
+        )
     ).all()
     assert remaining == []
 
@@ -332,7 +334,9 @@ def test_revoke_access_with_permission_only_removes_that_permission(alice):
     alice.commit()
 
     remaining = alice.scalars(
-        select(DocumentAccess).where(DocumentAccess.document_id == doc.id)
+        select(DocumentAccess).where(
+            DocumentAccess.document_id == doc.id, DocumentAccess.grantee_role == "agent_bob"
+        )
     ).all()
     assert [g.permission for g in remaining] == ["read"]
 
@@ -602,6 +606,141 @@ def test_add_raw_documents_source_urls_defaults_to_none_when_omitted(alice):
     alice.commit()
 
     assert all(doc.source_url is None for chunks in result for doc in chunks)
+
+
+def _grant_pairs(session, document_id):
+    grants = session.scalars(
+        select(DocumentAccess).where(DocumentAccess.document_id == document_id)
+    ).all()
+    return {(g.grantee_role, g.permission) for g in grants}
+
+
+def test_add_document_no_roles_arg_defaults_to_shared_reader(alice):
+    doc = crud.add_document(
+        alice, content="default doc", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    assert _grant_pairs(alice, doc.id) == {("shared_reader", "read")}
+
+
+def test_add_document_empty_roles_dict_means_no_grants(alice):
+    doc = crud.add_document(
+        alice, content="private doc", embedding=vec(0), owner_agent="agent_alice", roles={}
+    )
+    alice.commit()
+
+    assert _grant_pairs(alice, doc.id) == set()
+
+
+def test_add_document_custom_roles_override_the_default(alice):
+    doc = crud.add_document(
+        alice,
+        content="custom doc",
+        embedding=vec(0),
+        owner_agent="agent_alice",
+        roles={"agent_bob": ["read", "write"]},
+    )
+    alice.commit()
+
+    assert _grant_pairs(alice, doc.id) == {("agent_bob", "read"), ("agent_bob", "write")}
+
+
+def test_add_document_multiple_roles_all_get_granted(alice):
+    doc = crud.add_document(
+        alice,
+        content="multi-role doc",
+        embedding=vec(0),
+        owner_agent="agent_alice",
+        roles={"agent_bob": ["read"], "shared_reader": ["read"]},
+    )
+    alice.commit()
+
+    assert _grant_pairs(alice, doc.id) == {("agent_bob", "read"), ("shared_reader", "read")}
+
+
+def test_add_sequential_documents_no_roles_arg_defaults_shared_reader_on_every_doc(alice):
+    docs = crud.add_sequential_documents(
+        alice, contents=["c0", "c1"], owner_agent="agent_alice", embeddings=[vec(0), vec(1)],
+    )
+    alice.commit()
+
+    for doc in docs:
+        assert _grant_pairs(alice, doc.id) == {("shared_reader", "read")}
+
+
+def test_add_sequential_documents_empty_roles_dict_means_no_grants_on_any_doc(alice):
+    docs = crud.add_sequential_documents(
+        alice, contents=["c0", "c1"], owner_agent="agent_alice",
+        embeddings=[vec(0), vec(1)], roles={},
+    )
+    alice.commit()
+
+    for doc in docs:
+        assert _grant_pairs(alice, doc.id) == set()
+
+
+def test_add_sequential_documents_custom_roles_applied_to_every_doc(alice):
+    docs = crud.add_sequential_documents(
+        alice, contents=["c0", "c1"], owner_agent="agent_alice",
+        embeddings=[vec(0), vec(1)], roles={"agent_bob": ["read"]},
+    )
+    alice.commit()
+
+    for doc in docs:
+        assert _grant_pairs(alice, doc.id) == {("agent_bob", "read")}
+
+
+def test_add_raw_document_no_roles_arg_defaults_shared_reader_on_every_chunk(alice):
+    docs = crud.add_raw_document(alice, "para one\n\npara two\n", owner_agent="agent_alice")
+    alice.commit()
+
+    assert len(docs) > 1
+    for doc in docs:
+        assert _grant_pairs(alice, doc.id) == {("shared_reader", "read")}
+
+
+def test_add_raw_document_empty_roles_dict_means_no_grants_on_any_chunk(alice):
+    docs = crud.add_raw_document(
+        alice, "para one\n\npara two\n", owner_agent="agent_alice", roles={}
+    )
+    alice.commit()
+
+    for doc in docs:
+        assert _grant_pairs(alice, doc.id) == set()
+
+
+def test_add_raw_document_custom_roles_applied_to_every_chunk(alice):
+    docs = crud.add_raw_document(
+        alice, "para one\n\npara two\n", owner_agent="agent_alice",
+        roles={"agent_bob": ["read"]},
+    )
+    alice.commit()
+
+    for doc in docs:
+        assert _grant_pairs(alice, doc.id) == {("agent_bob", "read")}
+
+
+def test_add_raw_documents_applies_same_roles_to_every_document_in_the_batch(alice):
+    raw_docs = ["doc a\n", "doc b\n"]
+    result = crud.add_raw_documents(
+        alice, raw_docs, owner_agent="agent_alice", roles={"agent_bob": ["read"]},
+    )
+    alice.commit()
+
+    for chunks in result:
+        for doc in chunks:
+            assert _grant_pairs(alice, doc.id) == {("agent_bob", "read")}
+
+
+def test_add_raw_documents_empty_roles_dict_means_no_grants_anywhere(alice):
+    raw_docs = ["doc a\n", "doc b\n"]
+    result = crud.add_raw_documents(alice, raw_docs, owner_agent="agent_alice", roles={})
+    alice.commit()
+
+    for chunks in result:
+        for doc in chunks:
+            assert _grant_pairs(alice, doc.id) == set()
 
 
 def test_log_feedback(alice):

@@ -12,9 +12,9 @@ EMBEDDING_DIM = int(os.environ.get("KNOWLEDGE_GROVE_EMBEDDING_DIM", 768))
 # Postgres enum values. Defined once here so models.py (SQLAlchemy Enum
 # types) and the initial migration (raw CREATE TYPE ... AS ENUM statements)
 # can't drift apart from each other.
-PERMISSIONS = ("read", "write")
 SOURCE_METHODS = ("vector", "tags", "fulltext", "ilike", "id")
 JUDGED_BY_VALUES = ("explicit_llm", "implicit_usage")
+SHARED_READER = "shared_reader"
 
 class EdgeType(StrEnum):
     NEXT = "next"
@@ -23,3 +23,7 @@ class EdgeType(StrEnum):
     TOOL = "tool"
     RELATED = "related"
     SUPERSEDES = "supersedes"
+
+class PERMISSIONS(StrEnum):
+    READ = "read"
+    WRITE = "write"

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from knowledge_grove.models import Document, DocumentAccess, DocumentTag, Edge, RetrievalFeedback
 from knowledge_grove.utils.embedding import get_embedding_model
-from knowledge_grove.constants import EdgeType, PERMISSIONS
+from knowledge_grove.constants import EdgeType, PERMISSIONS, SHARED_READER
 from knowledge_grove.utils.chunking import chunk_markdown
 
 
@@ -17,6 +17,7 @@ def add_document(
     summary: str | None = None,
     summary_embedding: list[float] | None = None,
     source_url: str | None = None,
+    roles: dict[str, list[str]] | None = None,
 ) -> Document:
     """Insert a new chunk row.
 
@@ -29,6 +30,8 @@ def add_document(
         embedding = get_embedding_model().embed_text(content)
     if summary is not None and summary_embedding is None:
         summary_embedding = get_embedding_model().embed_text(summary)
+    if roles is None:
+        roles = {SHARED_READER: [PERMISSIONS.READ]}
 
     document = Document(
         content=content,
@@ -40,6 +43,11 @@ def add_document(
     )
     session.add(document)
     session.flush()
+
+    for role in roles or []:
+        for permission in roles[role]:
+            grant_access(session, document.id, role, permission)
+
     return document
 
 def add_sequential_documents(
@@ -51,6 +59,7 @@ def add_sequential_documents(
     summary_embeddings: list[list[float]] | None = None,
     source_urls: list[str] | None = None,
     descriptions: list[str] | None = None,
+    roles: dict[str, list[str]] | None = None,
 ) -> list[Document]:
     """Insert a sequence of new chunk rows, linking each to the previous one with a 'follows' edge.
 
@@ -77,6 +86,7 @@ def add_sequential_documents(
             summary=summary,
             summary_embedding=summary_embedding,
             source_url=source_url,
+            roles=roles
         )
         documents.append(document)
 
@@ -94,7 +104,13 @@ def add_sequential_documents(
 
     return documents
 
-def add_raw_document(session: Session, document: str, owner_agent: str, source_url: str | None = None) -> list[Document]:
+def add_raw_document(
+        session: Session, 
+        document: str, 
+        owner_agent: str, 
+        source_url: str | None = None, 
+        roles: dict[str, list[str]] | None = None
+        ) -> list[Document]:
     """Insert a raw document string, chunking it into smaller pieces."""
     chunked_documents = chunk_markdown(document)
     return add_sequential_documents(
@@ -102,14 +118,22 @@ def add_raw_document(session: Session, document: str, owner_agent: str, source_u
         contents=chunked_documents,
         owner_agent=owner_agent,
         source_urls=[source_url] * len(chunked_documents) if source_url is not None else None,
+        roles=roles
     )
+    
 
-def add_raw_documents(session: Session, documents: list[str], owner_agent: str, source_urls: list[str | None] | None = None) -> list[list[Document]]:
+def add_raw_documents(
+        session: Session, 
+        documents: list[str], 
+        owner_agent: str, 
+        source_urls: list[str | None] | None = None, 
+        roles: dict[str, list[str]] | None = None
+        ) -> list[list[Document]]:
     """Insert a list of raw document strings, chunking each into smaller pieces."""
     documents_list = []
     for i, document in enumerate(documents):
         source_url = source_urls[i] if source_urls is not None else None
-        document_chunks = add_raw_document(session, document, owner_agent, source_url)
+        document_chunks = add_raw_document(session, document, owner_agent, source_url, roles)
         documents_list.append(document_chunks)
     return documents_list
 
