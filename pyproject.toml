@@ -18,6 +18,9 @@ dependencies = [
     "mcp>=2.0",
 ]
 
+[project.scripts]
+knowledge-grove = "knowledge_grove.cli:main"
+
 [project.optional-dependencies]
 test = [
     "pytest>=8.0",
