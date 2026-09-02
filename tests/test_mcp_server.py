@@ -16,6 +16,7 @@ import sys
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from knowledge_grove import crud
 from knowledge_grove.db import get_session
@@ -95,6 +96,68 @@ def test_add_document_tool_auto_embeds_and_returns_json_serializable_dict(mcp_se
     # It's genuinely embedded, not a stub -- prove it by finding it via search.
     hits = mcp_server_module.gather_context_tool(query_text="exponential backoff", pattern="backoff")
     assert any(h["id"] == result["id"] for h in hits)
+
+
+def _grant_pairs_for(mcp_server_module, document_id):
+    session = get_session(mcp_server_module.engine)
+    try:
+        grants = session.scalars(
+            select(DocumentAccess).where(DocumentAccess.document_id == uuid.UUID(document_id))
+        ).all()
+        return {(g.grantee_role, g.permission) for g in grants}
+    finally:
+        session.close()
+
+
+def test_add_document_tool_no_roles_arg_defaults_to_shared_reader(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(content="default doc", owner_agent="agent_alice")
+
+    assert _grant_pairs_for(mcp_server_module, doc["id"]) == {("shared_reader", "read")}
+
+
+def test_add_document_tool_empty_roles_dict_means_no_grants(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(
+        content="private doc", owner_agent="agent_alice", roles={},
+    )
+
+    assert _grant_pairs_for(mcp_server_module, doc["id"]) == set()
+
+
+def test_add_document_tool_custom_roles_override_the_default(mcp_server_module):
+    doc = mcp_server_module.add_document_tool(
+        content="custom doc", owner_agent="agent_alice", roles={"agent_bob": ["read", "write"]},
+    )
+
+    assert _grant_pairs_for(mcp_server_module, doc["id"]) == {
+        ("agent_bob", "read"), ("agent_bob", "write"),
+    }
+
+
+def test_add_sequential_documents_tool_no_roles_arg_defaults_shared_reader_on_every_doc(mcp_server_module):
+    docs = mcp_server_module.add_sequential_documents_tool(
+        contents=["c0", "c1"], owner_agent="agent_alice",
+    )
+
+    for doc in docs:
+        assert _grant_pairs_for(mcp_server_module, doc["id"]) == {("shared_reader", "read")}
+
+
+def test_add_sequential_documents_tool_empty_roles_dict_means_no_grants_on_any_doc(mcp_server_module):
+    docs = mcp_server_module.add_sequential_documents_tool(
+        contents=["c0", "c1"], owner_agent="agent_alice", roles={},
+    )
+
+    for doc in docs:
+        assert _grant_pairs_for(mcp_server_module, doc["id"]) == set()
+
+
+def test_add_sequential_documents_tool_custom_roles_applied_to_every_doc(mcp_server_module):
+    docs = mcp_server_module.add_sequential_documents_tool(
+        contents=["c0", "c1"], owner_agent="agent_alice", roles={"agent_bob": ["read"]},
+    )
+
+    for doc in docs:
+        assert _grant_pairs_for(mcp_server_module, doc["id"]) == {("agent_bob", "read")}
 
 
 def test_add_sequential_documents_tool_is_registered(mcp_server_module):
