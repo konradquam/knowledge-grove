@@ -22,6 +22,8 @@ from knowledge_grove import crud
 from knowledge_grove.db import get_session
 from knowledge_grove.models import DocumentAccess
 
+from conftest import _dsn_as
+
 
 @pytest.fixture()
 def mcp_server_module(admin_dsn):
@@ -30,6 +32,25 @@ def mcp_server_module(admin_dsn):
     module = importlib.import_module("knowledge_grove.mcp_server")
     yield module
     sys.modules.pop("knowledge_grove.mcp_server", None)
+
+
+def test_add_document_tool_owner_agent_is_derived_from_the_connection(admin_dsn, test_roles):
+    # Connect as a real, non-privileged agent role -- not the admin/superuser
+    # every other test in this file uses -- to prove owner_agent is genuinely
+    # derived from current_user, not something a caller could have supplied.
+    os.environ["KNOWLEDGE_GROVE_DSN"] = _dsn_as(admin_dsn, "agent_alice", "alice")
+    sys.modules.pop("knowledge_grove.mcp_server", None)
+    module = importlib.import_module("knowledge_grove.mcp_server")
+    try:
+        doc = module.add_document_tool(content="whoami doc")
+        assert doc["owner_agent"] == "agent_alice"
+
+        # owner_agent isn't just defaulted -- it was removed as a parameter
+        # entirely, so there's nothing for a caller to override.
+        with pytest.raises(TypeError):
+            module.add_document_tool(content="x", owner_agent="agent_bob")
+    finally:
+        sys.modules.pop("knowledge_grove.mcp_server", None)
 
 
 def test_mcp_server_module_imports_without_error(mcp_server_module):
@@ -83,7 +104,6 @@ def test_add_document_tool_auto_embeds_and_returns_json_serializable_dict(mcp_se
     # No embedding parameter anywhere -- content in, dict out.
     result = mcp_server_module.add_document_tool(
         content="Retries should use exponential backoff.",
-        owner_agent="agent_alice",
         summary="Retry policy",
     )
     json.dumps(result)  # must not raise
@@ -110,14 +130,14 @@ def _grant_pairs_for(mcp_server_module, document_id):
 
 
 def test_add_document_tool_no_roles_arg_defaults_to_shared_reader(mcp_server_module):
-    doc = mcp_server_module.add_document_tool(content="default doc", owner_agent="agent_alice")
+    doc = mcp_server_module.add_document_tool(content="default doc")
 
     assert _grant_pairs_for(mcp_server_module, doc["id"]) == {("shared_reader", "read")}
 
 
 def test_add_document_tool_empty_roles_dict_means_no_grants(mcp_server_module):
     doc = mcp_server_module.add_document_tool(
-        content="private doc", owner_agent="agent_alice", roles={},
+        content="private doc", roles={},
     )
 
     assert _grant_pairs_for(mcp_server_module, doc["id"]) == set()
@@ -125,7 +145,7 @@ def test_add_document_tool_empty_roles_dict_means_no_grants(mcp_server_module):
 
 def test_add_document_tool_custom_roles_override_the_default(mcp_server_module):
     doc = mcp_server_module.add_document_tool(
-        content="custom doc", owner_agent="agent_alice", roles={"agent_bob": ["read", "write"]},
+        content="custom doc", roles={"agent_bob": ["read", "write"]},
     )
 
     assert _grant_pairs_for(mcp_server_module, doc["id"]) == {
@@ -135,7 +155,7 @@ def test_add_document_tool_custom_roles_override_the_default(mcp_server_module):
 
 def test_add_sequential_documents_tool_no_roles_arg_defaults_shared_reader_on_every_doc(mcp_server_module):
     docs = mcp_server_module.add_sequential_documents_tool(
-        contents=["c0", "c1"], owner_agent="agent_alice",
+        contents=["c0", "c1"],
     )
 
     for doc in docs:
@@ -144,7 +164,7 @@ def test_add_sequential_documents_tool_no_roles_arg_defaults_shared_reader_on_ev
 
 def test_add_sequential_documents_tool_empty_roles_dict_means_no_grants_on_any_doc(mcp_server_module):
     docs = mcp_server_module.add_sequential_documents_tool(
-        contents=["c0", "c1"], owner_agent="agent_alice", roles={},
+        contents=["c0", "c1"], roles={},
     )
 
     for doc in docs:
@@ -153,7 +173,7 @@ def test_add_sequential_documents_tool_empty_roles_dict_means_no_grants_on_any_d
 
 def test_add_sequential_documents_tool_custom_roles_applied_to_every_doc(mcp_server_module):
     docs = mcp_server_module.add_sequential_documents_tool(
-        contents=["c0", "c1"], owner_agent="agent_alice", roles={"agent_bob": ["read"]},
+        contents=["c0", "c1"], roles={"agent_bob": ["read"]},
     )
 
     for doc in docs:
@@ -170,7 +190,6 @@ def test_add_sequential_documents_tool_auto_embeds_and_links_prev_edges(mcp_serv
     # No embedding parameter anywhere -- contents in, dicts out.
     docs = mcp_server_module.add_sequential_documents_tool(
         contents=["chunk one", "chunk two", "chunk three"],
-        owner_agent="agent_alice",
     )
     json.dumps(docs)  # must not raise
 
@@ -188,7 +207,7 @@ def test_add_sequential_documents_tool_auto_embeds_and_links_prev_edges(mcp_serv
 
 def test_add_sequential_documents_tool_first_document_has_no_edges(mcp_server_module):
     docs = mcp_server_module.add_sequential_documents_tool(
-        contents=["only one"], owner_agent="agent_alice",
+        contents=["only one"],
     )
 
     assert mcp_server_module.get_edges_tool(docs[0]["id"]) == []
@@ -197,7 +216,6 @@ def test_add_sequential_documents_tool_first_document_has_no_edges(mcp_server_mo
 def test_add_sequential_documents_tool_uses_given_descriptions(mcp_server_module):
     docs = mcp_server_module.add_sequential_documents_tool(
         contents=["c0", "c1"],
-        owner_agent="agent_alice",
         descriptions=[None, "second chunk"],
     )
 
@@ -208,7 +226,6 @@ def test_add_sequential_documents_tool_uses_given_descriptions(mcp_server_module
 def test_add_sequential_documents_tool_applies_summaries_and_source_urls(mcp_server_module):
     docs = mcp_server_module.add_sequential_documents_tool(
         contents=["c0", "c1"],
-        owner_agent="agent_alice",
         summaries=["summary 0", "summary 1"],
         source_urls=["https://example.com/0", "https://example.com/1"],
     )
@@ -220,7 +237,7 @@ def test_add_sequential_documents_tool_applies_summaries_and_source_urls(mcp_ser
 
 
 def test_get_by_id_tool_returns_document(mcp_server_module):
-    added = mcp_server_module.add_document_tool(content="findable content", owner_agent="agent_alice")
+    added = mcp_server_module.add_document_tool(content="findable content")
 
     fetched = mcp_server_module.get_by_id_tool(added["id"])
 
@@ -234,8 +251,8 @@ def test_get_by_id_tool_returns_none_for_missing(mcp_server_module):
 
 
 def test_get_edges_tool_returns_edges(mcp_server_module):
-    doc_a = mcp_server_module.add_document_tool(content="doc a", owner_agent="agent_alice")
-    doc_b = mcp_server_module.add_document_tool(content="doc b", owner_agent="agent_alice")
+    doc_a = mcp_server_module.add_document_tool(content="doc a")
+    doc_b = mcp_server_module.add_document_tool(content="doc b")
     mcp_server_module.add_edge_tool(
         from_document_id=doc_a["id"], edge_type="related",
         description="see also doc b", to_document_id=doc_b["id"],
@@ -250,7 +267,7 @@ def test_get_edges_tool_returns_edges(mcp_server_module):
 
 
 def test_update_document_tool_creates_new_revision_and_auto_embeds(mcp_server_module):
-    original = mcp_server_module.add_document_tool(content="v1", owner_agent="agent_alice")
+    original = mcp_server_module.add_document_tool(content="v1")
 
     revised = mcp_server_module.update_document_tool(original["id"], content="v2 with new wording")
 
@@ -263,7 +280,7 @@ def test_update_document_tool_creates_new_revision_and_auto_embeds(mcp_server_mo
 
 
 def test_add_tag_tool(mcp_server_module):
-    doc = mcp_server_module.add_document_tool(content="tagged doc", owner_agent="agent_alice")
+    doc = mcp_server_module.add_document_tool(content="tagged doc")
 
     tag = mcp_server_module.add_tag_tool(doc["id"], "  Retries  ", "discusses retry policy")
     json.dumps(tag)  # must not raise
@@ -273,7 +290,7 @@ def test_add_tag_tool(mcp_server_module):
 
 
 def test_add_edge_tool_to_external_url(mcp_server_module):
-    doc = mcp_server_module.add_document_tool(content="a doc", owner_agent="agent_alice")
+    doc = mcp_server_module.add_document_tool(content="a doc")
 
     edge = mcp_server_module.add_edge_tool(
         from_document_id=doc["id"], edge_type="tool",
@@ -286,8 +303,8 @@ def test_add_edge_tool_to_external_url(mcp_server_module):
 
 
 def test_add_edge_tool_description_is_optional(mcp_server_module):
-    doc_a = mcp_server_module.add_document_tool(content="doc a", owner_agent="agent_alice")
-    doc_b = mcp_server_module.add_document_tool(content="doc b", owner_agent="agent_alice")
+    doc_a = mcp_server_module.add_document_tool(content="doc a")
+    doc_b = mcp_server_module.add_document_tool(content="doc b")
 
     edge = mcp_server_module.add_edge_tool(
         from_document_id=doc_a["id"], edge_type="related", to_document_id=doc_b["id"],
@@ -298,7 +315,7 @@ def test_add_edge_tool_description_is_optional(mcp_server_module):
 
 
 def test_grant_and_revoke_access_tools(mcp_server_module):
-    doc = mcp_server_module.add_document_tool(content="shared doc", owner_agent="agent_alice")
+    doc = mcp_server_module.add_document_tool(content="shared doc")
 
     grant = mcp_server_module.grant_access_tool(doc["id"], "agent_bob", "read")
     json.dumps(grant)  # must not raise
@@ -310,7 +327,7 @@ def test_grant_and_revoke_access_tools(mcp_server_module):
 
 
 def test_log_feedback_tool(mcp_server_module):
-    doc = mcp_server_module.add_document_tool(content="feedback target", owner_agent="agent_alice")
+    doc = mcp_server_module.add_document_tool(content="feedback target")
 
     feedback = mcp_server_module.log_feedback_tool(
         query_text="how do retries work",
@@ -327,7 +344,7 @@ def test_log_feedback_tool(mcp_server_module):
 
 
 def test_log_feedback_tool_without_relevance(mcp_server_module):
-    doc = mcp_server_module.add_document_tool(content="feedback target", owner_agent="agent_alice")
+    doc = mcp_server_module.add_document_tool(content="feedback target")
 
     feedback = mcp_server_module.log_feedback_tool(
         query_text="how do retries work",
@@ -342,8 +359,8 @@ def test_log_feedback_tool_without_relevance(mcp_server_module):
 
 
 def test_add_edge_tool_rejects_both_targets(mcp_server_module):
-    doc_a = mcp_server_module.add_document_tool(content="doc a", owner_agent="agent_alice")
-    doc_b = mcp_server_module.add_document_tool(content="doc b", owner_agent="agent_alice")
+    doc_a = mcp_server_module.add_document_tool(content="doc a")
+    doc_b = mcp_server_module.add_document_tool(content="doc b")
 
     with pytest.raises(ValueError):
         mcp_server_module.add_edge_tool(
@@ -353,7 +370,7 @@ def test_add_edge_tool_rejects_both_targets(mcp_server_module):
 
 
 def test_add_edge_tool_rejects_neither_target(mcp_server_module):
-    doc = mcp_server_module.add_document_tool(content="a doc", owner_agent="agent_alice")
+    doc = mcp_server_module.add_document_tool(content="a doc")
 
     with pytest.raises(ValueError):
         mcp_server_module.add_edge_tool(
@@ -362,15 +379,15 @@ def test_add_edge_tool_rejects_neither_target(mcp_server_module):
 
 
 def test_get_edges_tool_returns_empty_list_for_no_edges(mcp_server_module):
-    doc = mcp_server_module.add_document_tool(content="lonely doc", owner_agent="agent_alice")
+    doc = mcp_server_module.add_document_tool(content="lonely doc")
 
     assert mcp_server_module.get_edges_tool(doc["id"]) == []
 
 
 def test_get_edges_tool_returns_multiple_edges(mcp_server_module):
-    doc_a = mcp_server_module.add_document_tool(content="doc a", owner_agent="agent_alice")
-    doc_b = mcp_server_module.add_document_tool(content="doc b", owner_agent="agent_alice")
-    doc_c = mcp_server_module.add_document_tool(content="doc c", owner_agent="agent_alice")
+    doc_a = mcp_server_module.add_document_tool(content="doc a")
+    doc_b = mcp_server_module.add_document_tool(content="doc b")
+    doc_c = mcp_server_module.add_document_tool(content="doc c")
     mcp_server_module.add_edge_tool(
         from_document_id=doc_a["id"], edge_type="related", description="see b", to_document_id=doc_b["id"],
     )
@@ -389,7 +406,7 @@ def test_get_edges_tool_reveals_supersedes_edge_after_update(mcp_server_module):
     # linking back to the old one -- confirm that's actually visible through
     # get_edges_tool, tying the two tools together the way an agent would use
     # them (update, then look at what changed).
-    original = mcp_server_module.add_document_tool(content="v1", owner_agent="agent_alice")
+    original = mcp_server_module.add_document_tool(content="v1")
     revised = mcp_server_module.update_document_tool(original["id"], content="v2")
 
     edges = mcp_server_module.get_edges_tool(revised["id"])
@@ -400,7 +417,7 @@ def test_get_edges_tool_reveals_supersedes_edge_after_update(mcp_server_module):
 
 
 def test_revoke_access_tool_with_specific_permission_leaves_other_intact(mcp_server_module):
-    doc = mcp_server_module.add_document_tool(content="shared doc", owner_agent="agent_alice")
+    doc = mcp_server_module.add_document_tool(content="shared doc")
     mcp_server_module.grant_access_tool(doc["id"], "agent_bob", "read")
     mcp_server_module.grant_access_tool(doc["id"], "agent_bob", "write")
 
@@ -416,9 +433,9 @@ def test_revoke_access_tool_with_specific_permission_leaves_other_intact(mcp_ser
 
 
 def test_gather_context_tool_respects_tags(mcp_server_module):
-    tagged = mcp_server_module.add_document_tool(content="retries and backoff", owner_agent="agent_alice")
+    tagged = mcp_server_module.add_document_tool(content="retries and backoff")
     mcp_server_module.add_tag_tool(tagged["id"], "config", "config setting")
-    untagged = mcp_server_module.add_document_tool(content="retries and backoff too", owner_agent="agent_alice")
+    untagged = mcp_server_module.add_document_tool(content="retries and backoff too")
 
     results = mcp_server_module.gather_context_tool(
         query_text="retries", pattern="backoff", tags=["config"],

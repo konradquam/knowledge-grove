@@ -2,6 +2,7 @@ import os
 import uuid
 
 from mcp.server.mcpserver import MCPServer
+from sqlalchemy import text
 
 from knowledge_grove import crud
 from knowledge_grove.db import get_engine, get_session
@@ -10,6 +11,17 @@ from knowledge_grove.search import gather_context
 
 mcp_server = MCPServer(name="knowledge-grove")
 engine = get_engine(os.environ["KNOWLEDGE_GROVE_DSN"])
+
+
+def _current_agent(session) -> str:
+    """The Postgres role this server is actually connected as -- the only
+    trustworthy source for who owns a document. Never take ownership from a
+    caller-supplied argument: this connection is meant to represent exactly
+    one agent identity (see the design doc's §4 "own role and credentials"
+    model), so who's asking is a property of the connection, not something
+    the caller gets to declare.
+    """
+    return session.execute(text("SELECT current_user")).scalar()
 
 
 def _document_to_dict(doc: Document) -> dict:
@@ -70,23 +82,24 @@ def gather_context_tool(
 
 def add_document_tool(
     content: str,
-    owner_agent: str,
     summary: str | None = None,
     source_url: str | None = None,
     roles: dict[str, list[str]] | None = None,
 ) -> dict:
-    """Add a new document. The embedding is computed automatically from `content`
-    (and from `summary`, if given) — there's no vector to supply.
+    """Add a new document, owned by whichever agent this server is connected
+    as (there's no owner to specify -- it's a property of the connection,
+    not something a caller declares). The embedding is computed automatically
+    from `content` (and from `summary`, if given) — there's no vector to supply.
 
-    `roles` controls who besides `owner_agent` can access this document: a
+    `roles` controls who besides the owner can access this document: a
     mapping from grantee role name to a list of permissions ("read" and/or
     "write"), e.g. {"shared_reader": ["read"], "agent_bob": ["read", "write"]}.
     If omitted entirely, the document defaults to {"shared_reader": ["read"]}
     — readable by every agent in the shared_reader group. Pass an empty
-    object ({}) to keep the document private to `owner_agent` only."""
+    object ({}) to keep the document private to the owner only."""
     with get_session(engine) as session:
         doc = crud.add_document(
-            session, content=content, owner_agent=owner_agent, summary=summary,
+            session, content=content, owner_agent=_current_agent(session), summary=summary,
             source_url=source_url, roles=roles,
         )
         session.commit()
@@ -94,26 +107,26 @@ def add_document_tool(
 
 def add_sequential_documents_tool(
     contents: list[str],
-    owner_agent: str,
     summaries: list[str] | None = None,
     source_urls: list[str] | None = None,
     descriptions: list[str] | None = None,
     roles: dict[str, list[str]] | None = None,
 ) -> list[dict]:
-    """Add a sequence of new documents, linking each to the previous one with a 'follows' edge.
-    The embeddings are computed automatically from `contents` (and from `summaries`, if given)
-    — there's no vector to supply.
+    """Add a sequence of new documents, linking each to the previous one with a 'follows' edge,
+    owned by whichever agent this server is connected as (there's no owner to specify -- it's
+    a property of the connection, not something a caller declares). The embeddings are computed
+    automatically from `contents` (and from `summaries`, if given) — there's no vector to supply.
 
-    `roles` controls who besides `owner_agent` can access every document in
+    `roles` controls who besides the owner can access every document in
     the sequence: a mapping from grantee role name to a list of permissions
     ("read" and/or "write"), e.g. {"shared_reader": ["read"], "agent_bob": ["read", "write"]}.
     The same `roles` is applied to each document in the sequence. If omitted
     entirely, every document defaults to {"shared_reader": ["read"]} —
     readable by every agent in the shared_reader group. Pass an empty object
-    ({}) to keep every document in the sequence private to `owner_agent` only."""
+    ({}) to keep every document in the sequence private to the owner only."""
     with get_session(engine) as session:
         docs = crud.add_sequential_documents(
-            session, contents=contents, owner_agent=owner_agent,
+            session, contents=contents, owner_agent=_current_agent(session),
             summaries=summaries, source_urls=source_urls, descriptions=descriptions,
             roles=roles,
         )
