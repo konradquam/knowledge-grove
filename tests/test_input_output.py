@@ -4,6 +4,7 @@ from knowledge_grove.models import Edge
 from knowledge_grove.utils.input_output import (
     add_file_as_document,
     add_files_as_documents,
+    detect_content_type,
     file_to_string,
 )
 
@@ -136,3 +137,64 @@ def test_add_files_as_documents_source_urls_default_to_none_when_omitted(alice, 
 
 def test_add_files_as_documents_empty_list_returns_empty(alice):
     assert add_files_as_documents(alice, [], owner_agent="agent_alice") == []
+
+
+def test_detect_content_type_python_extension():
+    assert detect_content_type("script.py") == "python"
+
+
+def test_detect_content_type_sql_extension():
+    assert detect_content_type("query.sql") == "sql"
+
+
+def test_detect_content_type_defaults_to_markdown_for_unknown_extensions():
+    assert detect_content_type("notes.txt") == "markdown"
+    assert detect_content_type("README.md") == "markdown"
+    assert detect_content_type("no_extension") == "markdown"
+
+
+def test_detect_content_type_is_case_insensitive():
+    assert detect_content_type("SCRIPT.PY") == "python"
+
+
+def test_add_file_as_document_auto_detects_python_from_extension(alice, tmp_path):
+    path = tmp_path / "script.py"
+    path.write_text("def foo():\n    return 1\n\n\ndef bar():\n    return 2\n")
+
+    docs = add_file_as_document(alice, str(path), owner_agent="agent_alice")
+    alice.commit()
+
+    assert [d.content for d in docs] == ["def foo():\n    return 1", "def bar():\n    return 2"]
+
+
+def test_add_file_as_document_auto_detects_sql_from_extension(alice, tmp_path):
+    path = tmp_path / "query.sql"
+    path.write_text("SELECT 1;\n\nSELECT 2;\n")
+
+    docs = add_file_as_document(alice, str(path), owner_agent="agent_alice")
+    alice.commit()
+
+    assert [d.content for d in docs] == ["SELECT 1;", "SELECT 2;"]
+
+
+def test_add_file_as_document_explicit_content_type_overrides_extension(alice, tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("def only_func():\n    pass\n")
+
+    docs = add_file_as_document(alice, str(path), owner_agent="agent_alice", content_type="python")
+    alice.commit()
+
+    assert [d.content for d in docs] == ["def only_func():\n    pass"]
+
+
+def test_add_files_as_documents_applies_content_types_per_file(alice, tmp_path):
+    py_path = tmp_path / "script.py"
+    py_path.write_text("def foo():\n    pass\n")
+    md_path = tmp_path / "doc.md"
+    md_path.write_text("# H\n\npara one\n")
+
+    result = add_files_as_documents(alice, [str(py_path), str(md_path)], owner_agent="agent_alice")
+    alice.commit()
+
+    assert [d.content for d in result[0]] == ["def foo():\n    pass"]
+    assert [d.content for d in result[1]] == ["# H\n\npara one"]

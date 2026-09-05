@@ -15,10 +15,10 @@ from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.engine import make_url
 
 import knowledge_grove
-from knowledge_grove.constants import SHARED_READER
+from knowledge_grove.constants import ContentType, SHARED_READER
 from knowledge_grove.db import get_engine, get_session
 from knowledge_grove.models import Document
-from knowledge_grove.utils.input_output import add_file_as_document
+from knowledge_grove.utils.input_output import add_file_as_document, detect_content_type
 
 
 def _alembic_config(dsn: str) -> Config:
@@ -112,6 +112,7 @@ def ingest_files(
     dsn: str,
     file_paths: list[str],
     source_urls: list[str | None] | None = None,
+    content_types: list[str | None] | None = None,
     assume_yes: bool = False,
 ) -> None:
     """Ingest one or more files as documents, chunking each and computing
@@ -126,9 +127,18 @@ def ingest_files(
     proceeding (unless `assume_yes`): re-using an existing source_url for a
     genuinely different file would make add_raw_document treat it as a
     changed revision and deprecate that unrelated content.
+
+    Each file's `content_type` (which chunker to use) defaults to a guess
+    from its extension (detect_content_type) -- `.py` -> python, `.sql` ->
+    sql, everything else -> markdown. Pass `content_types` to override that
+    per file, matched by position to `file_paths`.
     """
     resolved_source_urls = [
         source_urls[i] if source_urls and source_urls[i] else Path(file_paths[i]).name
+        for i in range(len(file_paths))
+    ]
+    resolved_content_types = [
+        content_types[i] if content_types else None
         for i in range(len(file_paths))
     ]
 
@@ -137,7 +147,7 @@ def ingest_files(
     try:
         owner_agent = _current_agent(session)
 
-        for path, source_url in zip(file_paths, resolved_source_urls):
+        for path, source_url, content_type in zip(file_paths, resolved_source_urls, resolved_content_types):
             existing_count = _active_document_count(session, source_url)
             if existing_count > 0 and not assume_yes:
                 print(
@@ -153,9 +163,12 @@ def ingest_files(
                     print(f"Skipped '{path}'.")
                     continue
 
-            docs = add_file_as_document(session, path, owner_agent=owner_agent, source_url=source_url)
+            docs = add_file_as_document(
+                session, path, owner_agent=owner_agent, source_url=source_url, content_type=content_type,
+            )
             session.commit()
-            print(f"Ingested '{path}' as {len(docs)} chunk(s) under source_url '{source_url}'.")
+            used_type = content_type or detect_content_type(path)
+            print(f"Ingested '{path}' as {len(docs)} chunk(s) ({used_type}) under source_url '{source_url}'.")
     finally:
         session.close()
         engine.dispose()
@@ -191,6 +204,14 @@ def main() -> None:
         ),
     )
     ingest_parser.add_argument(
+        "--content-type", action="append", default=None, choices=list(ContentType),
+        help=(
+            "Chunker to use, given once per file in the same order as `files`. "
+            "Defaults to a guess from each file's extension (.py -> python, "
+            ".sql -> sql, everything else -> markdown)."
+        ),
+    )
+    ingest_parser.add_argument(
         "-y", "--yes", action="store_true",
         help="Don't prompt for confirmation when a source_url already has existing documents.",
     )
@@ -212,7 +233,12 @@ def main() -> None:
     elif args.command == "ingest":
         if args.source_url and len(args.source_url) != len(args.files):
             parser.error("--source-url must be given once per file, or omitted entirely")
-        ingest_files(dsn, args.files, source_urls=args.source_url, assume_yes=args.yes)
+        if args.content_type and len(args.content_type) != len(args.files):
+            parser.error("--content-type must be given once per file, or omitted entirely")
+        ingest_files(
+            dsn, args.files, source_urls=args.source_url,
+            content_types=args.content_type, assume_yes=args.yes,
+        )
 
 
 if __name__ == "__main__":

@@ -380,3 +380,77 @@ def test_main_ingest_rejects_mismatched_source_url_count(admin_dsn, ingest_agent
 
     with pytest.raises(SystemExit):
         cli.main()
+
+
+def test_ingest_files_auto_detects_content_type_from_extension(admin_dsn, ingest_agent, tmp_path):
+    agent_dsn, _ = ingest_agent
+    py_path = tmp_path / "script.py"
+    py_path.write_text("def foo():\n    return 1\n\n\ndef bar():\n    return 2\n")
+    sql_path = tmp_path / "query.sql"
+    sql_path.write_text("SELECT 1;\n\nSELECT 2;\n")
+
+    cli.ingest_files(agent_dsn, [str(py_path), str(sql_path)])
+
+    docs = _all_documents(admin_dsn)
+    by_source = {}
+    for d in docs:
+        by_source.setdefault(d.source_url, []).append(d.content)
+    assert by_source["script.py"] == ["def foo():\n    return 1", "def bar():\n    return 2"]
+    assert by_source["query.sql"] == ["SELECT 1;", "SELECT 2;"]
+
+
+def test_ingest_files_explicit_content_type_overrides_extension(admin_dsn, ingest_agent, tmp_path):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.txt"
+    file_path.write_text("def only_func():\n    pass\n")
+
+    cli.ingest_files(agent_dsn, [str(file_path)], content_types=["python"])
+
+    docs = _all_documents(admin_dsn)
+    assert [d.content for d in docs] == ["def only_func():\n    pass"]
+
+
+def test_main_ingest_subcommand_passes_through_content_type(admin_dsn, ingest_agent, tmp_path, monkeypatch):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "script.py"
+    file_path.write_text("def foo():\n    pass\n")
+
+    monkeypatch.setenv("KNOWLEDGE_GROVE_DSN", agent_dsn)
+    monkeypatch.setattr(sys, "argv", ["knowledge-grove", "ingest", str(file_path)])
+
+    cli.main()
+
+    docs = _all_documents(admin_dsn)
+    assert [d.content for d in docs] == ["def foo():\n    pass"]
+
+
+def test_main_ingest_rejects_invalid_content_type_choice(admin_dsn, ingest_agent, tmp_path, monkeypatch):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+
+    monkeypatch.setenv("KNOWLEDGE_GROVE_DSN", agent_dsn)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["knowledge-grove", "ingest", str(file_path), "--content-type", "not-a-real-type"],
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+
+def test_main_ingest_rejects_mismatched_content_type_count(admin_dsn, ingest_agent, tmp_path, monkeypatch):
+    agent_dsn, _ = ingest_agent
+    file_a = tmp_path / "a.md"
+    file_a.write_text("a\n")
+    file_b = tmp_path / "b.md"
+    file_b.write_text("b\n")
+
+    monkeypatch.setenv("KNOWLEDGE_GROVE_DSN", agent_dsn)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["knowledge-grove", "ingest", str(file_a), str(file_b), "--content-type", "markdown"],
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main()
