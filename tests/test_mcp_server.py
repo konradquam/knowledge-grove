@@ -89,6 +89,7 @@ def test_all_crud_tools_are_registered(mcp_server_module):
         "gather_context",
         "add_document",
         "add_sequential_documents",
+        "add_authored_chunks",
         "get_by_id",
         "get_edges",
         "update_document",
@@ -211,6 +212,103 @@ def test_add_sequential_documents_tool_first_document_has_no_edges(mcp_server_mo
     )
 
     assert mcp_server_module.get_edges_tool(docs[0]["id"]) == []
+
+
+def test_add_authored_chunks_tool_is_registered(mcp_server_module):
+    tools = asyncio.run(mcp_server_module.mcp_server.list_tools())
+    tool_names = [t.name for t in tools]
+    assert "add_authored_chunks" in tool_names
+
+
+def test_add_authored_chunks_tool_auto_embeds_and_links_prev_edges(mcp_server_module):
+    docs = mcp_server_module.add_authored_chunks_tool(
+        chunks=["chunk one", "chunk two", "chunk three"],
+    )
+    json.dumps(docs)  # must not raise
+
+    assert [d["content"] for d in docs] == ["chunk one", "chunk two", "chunk three"]
+
+    edges = mcp_server_module.get_edges_tool(docs[1]["id"])
+    assert len(edges) == 1
+    assert edges[0]["edge_type"] == "prev"
+    assert edges[0]["to_document_id"] == docs[0]["id"]
+
+    hits = mcp_server_module.gather_context_tool(query_text="chunk two", pattern="chunk two")
+    assert any(h["id"] == docs[1]["id"] for h in hits)
+
+
+def test_add_authored_chunks_tool_no_edges_arg_still_creates_prev_chain_only(mcp_server_module):
+    docs = mcp_server_module.add_authored_chunks_tool(chunks=["only one"])
+
+    assert mcp_server_module.get_edges_tool(docs[0]["id"]) == []
+
+
+def test_add_authored_chunks_tool_no_roles_arg_defaults_shared_reader_on_every_doc(mcp_server_module):
+    docs = mcp_server_module.add_authored_chunks_tool(chunks=["c0", "c1"])
+
+    for doc in docs:
+        assert _grant_pairs_for(mcp_server_module, doc["id"]) == {("shared_reader", "read")}
+
+
+def test_add_authored_chunks_tool_empty_roles_dict_means_no_grants_on_any_doc(mcp_server_module):
+    docs = mcp_server_module.add_authored_chunks_tool(chunks=["c0", "c1"], roles={})
+
+    for doc in docs:
+        assert _grant_pairs_for(mcp_server_module, doc["id"]) == set()
+
+
+def test_add_authored_chunks_tool_custom_roles_applied_to_every_doc(mcp_server_module):
+    docs = mcp_server_module.add_authored_chunks_tool(
+        chunks=["c0", "c1"], roles={"agent_bob": ["read"]},
+    )
+
+    for doc in docs:
+        assert _grant_pairs_for(mcp_server_module, doc["id"]) == {("agent_bob", "read")}
+
+
+def test_add_authored_chunks_tool_edge_to_existing_document_via_to_document_id(mcp_server_module):
+    existing = mcp_server_module.add_document_tool(content="existing doc")
+
+    docs = mcp_server_module.add_authored_chunks_tool(
+        chunks=["new chunk"],
+        edges=[{"from_index": 0, "edge_type": "source", "to_document_id": existing["id"]}],
+    )
+
+    edges = mcp_server_module.get_edges_tool(docs[0]["id"])
+    assert len(edges) == 1
+    assert edges[0]["edge_type"] == "source"
+    assert edges[0]["to_document_id"] == existing["id"]
+
+
+def test_add_authored_chunks_tool_edge_between_two_new_chunks_via_to_index(mcp_server_module):
+    docs = mcp_server_module.add_authored_chunks_tool(
+        chunks=["chunk 0", "chunk 1", "chunk 2"],
+        edges=[{"from_index": 2, "edge_type": "related", "to_index": 0}],
+    )
+
+    edges = mcp_server_module.get_edges_tool(docs[2]["id"])
+    related = [e for e in edges if e["edge_type"] == "related"]
+    assert len(related) == 1
+    assert related[0]["to_document_id"] == docs[0]["id"]
+
+
+def test_add_authored_chunks_tool_edge_to_external_url(mcp_server_module):
+    docs = mcp_server_module.add_authored_chunks_tool(
+        chunks=["chunk 0"],
+        edges=[{"from_index": 0, "edge_type": "tool", "external_url": "https://example.com/tool.py"}],
+    )
+
+    edges = mcp_server_module.get_edges_tool(docs[0]["id"])
+    assert edges[0]["external_url"] == "https://example.com/tool.py"
+    assert edges[0]["to_document_id"] is None
+
+
+def test_add_authored_chunks_tool_edge_with_no_target_raises(mcp_server_module):
+    with pytest.raises(ValueError):
+        mcp_server_module.add_authored_chunks_tool(
+            chunks=["c0"],
+            edges=[{"from_index": 0, "edge_type": "related"}],
+        )
 
 
 def test_add_sequential_documents_tool_uses_given_descriptions(mcp_server_module):

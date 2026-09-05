@@ -134,6 +134,59 @@ def add_sequential_documents_tool(
         return [_document_to_dict(doc) for doc in docs]
 
 
+def _edges_with_uuids(edges: list[dict] | None) -> list[dict] | None:
+    """MCP callers pass to_document_id as a plain string (JSON has no UUID
+    type) -- convert it the same way add_edge_tool does before it reaches crud.
+    """
+    if edges is None:
+        return None
+    converted = []
+    for edge in edges:
+        edge = dict(edge)
+        if edge.get("to_document_id") is not None:
+            edge["to_document_id"] = uuid.UUID(edge["to_document_id"])
+        converted.append(edge)
+    return converted
+
+
+def add_authored_chunks_tool(
+    chunks: list[str],
+    edges: list[dict] | None = None,
+    summaries: list[str] | None = None,
+    source_urls: list[str] | None = None,
+    descriptions: list[str] | None = None,
+    roles: dict[str, list[str]] | None = None,
+) -> list[dict]:
+    """Add a batch of already-segmented, self-written chunks in one call --
+    for content you're originating yourself (a decision writeup, a new note)
+    rather than parsing an existing source. Owned by whichever agent this
+    server is connected as (there's no owner to specify). `chunks` behaves
+    like add_sequential_documents: ordered content, auto-linked with `prev`
+    edges, embeddings computed automatically.
+
+    `edges` covers relationships beyond that sequence -- to each other, or to
+    documents already in the graph. Each entry is a dict:
+        {"from_index": int, "edge_type": str, "description": str | None,
+         "to_document_id": str | None,   # an existing document's id
+         "to_index": int | None,         # another chunk in this same call
+         "external_url": str | None}
+    `from_index`/`to_index` are positions into `chunks` (those chunks have no
+    id yet at call time). Exactly one of `to_document_id` / `to_index` /
+    `external_url` must be set per edge.
+
+    `roles` controls who besides the owner can access every chunk in this
+    batch, same as add_sequential_documents_tool. If omitted, defaults to
+    {"shared_reader": ["read"]}; pass {} to keep every chunk private."""
+    with get_session(engine) as session:
+        docs = crud.add_authored_chunks(
+            session, chunks=chunks, owner_agent=_current_agent(session),
+            edges=_edges_with_uuids(edges), summaries=summaries,
+            source_urls=source_urls, descriptions=descriptions, roles=roles,
+        )
+        session.commit()
+        return [_document_to_dict(doc) for doc in docs]
+
+
 def get_by_id_tool(document_id: str) -> dict | None:
     """Fetch a document by id."""
     with get_session(engine) as session:
@@ -232,6 +285,7 @@ for _fn, _name, _description in [
     (gather_context_tool, "gather_context", "Combined search that waits for all three methods to complete and merges results."),
     (add_document_tool, "add_document", "Add a new document; the embedding is computed automatically. `roles` grants other roles access (e.g. {\"shared_reader\": [\"read\"]}); if omitted, defaults to {\"shared_reader\": [\"read\"]} so every agent in the shared_reader group can read it. Pass {} to keep it private to the owner."),
     (add_sequential_documents_tool, "add_sequential_documents", "Add a sequence of documents, each linked to the previous one with a 'prev' edge; embeddings are computed automatically. `roles` grants other roles access to every document in the sequence (e.g. {\"shared_reader\": [\"read\"]}); if omitted, defaults to {\"shared_reader\": [\"read\"]} so every agent in the shared_reader group can read them. Pass {} to keep them private to the owner."),
+    (add_authored_chunks_tool, "add_authored_chunks", "Add a batch of already-segmented, self-written chunks in one call, for content you're originating yourself; embeddings are computed automatically. `edges` (optional) attaches relationships beyond the automatic 'prev' chain -- to each other via `to_index`, to an existing document via `to_document_id`, or to a URL via `external_url`, exactly one per edge. `roles` grants other roles access to every chunk (e.g. {\"shared_reader\": [\"read\"]}); if omitted, defaults to {\"shared_reader\": [\"read\"]}. Pass {} to keep every chunk private to the owner."),
     (get_by_id_tool, "get_by_id", "Fetch a document by id."),
     (get_edges_tool, "get_edges", "Outgoing edges from a document."),
     (update_document_tool, "update_document", "Create a new revision of a document; the embedding is computed automatically."),
