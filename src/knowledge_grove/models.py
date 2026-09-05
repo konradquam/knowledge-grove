@@ -46,6 +46,11 @@ class Document(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # sha256 hex digest of `content` -- see utils/hashing.py. Used for exact-match
+    # duplicate detection (add_document, add_raw_document reconciliation) via a
+    # plain btree index, which a fixed-width hash supports but the unbounded
+    # `content` column itself couldn't reliably.
+    content_hash: Mapped[str] = mapped_column(Text, nullable=False)
     content_tsv: Mapped[str] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('english', content)", persisted=True),
@@ -86,6 +91,7 @@ class Document(Base):
             postgresql_ops={"content": "gin_trgm_ops"},
         ),
         Index("ix_documents_content_tsv", "content_tsv", postgresql_using="gin"),
+        Index("ix_documents_content_hash", "content_hash"),
         Index(
             "ix_documents_embedding_hnsw",
             "embedding",

@@ -7,6 +7,7 @@ from knowledge_grove.models import Document, DocumentAccess, DocumentTag, Edge, 
 from knowledge_grove.utils.embedding import get_embedding_model
 from knowledge_grove.constants import EdgeType, PERMISSIONS, SHARED_READER
 from knowledge_grove.utils.chunking import chunk_markdown
+from knowledge_grove.utils.hashing import hash_content
 
 
 def add_document(
@@ -25,7 +26,20 @@ def add_document(
     automatically from the text if not supplied — pass one explicitly only if
     you have a reason to override the default model (a different model, or a
     precomputed batch embedding).
+
+    If a non-deprecated document with identical `content` already exists
+    (anywhere, not just for this `owner_agent`), that document is returned
+    unchanged instead of inserting a duplicate — no new embedding is computed.
     """
+    content_hash = hash_content(content)
+    existing = session.scalars(
+        select(Document).where(
+            Document.content_hash == content_hash, Document.deprecated.is_(False)
+        )
+    ).first()
+    if existing is not None:
+        return existing
+
     if embedding is None:
         embedding = get_embedding_model().embed_text(content)
     if summary is not None and summary_embedding is None:
@@ -35,6 +49,7 @@ def add_document(
 
     document = Document(
         content=content,
+        content_hash=content_hash,
         embedding=embedding,
         owner_agent=owner_agent,
         summary=summary,
@@ -105,14 +120,42 @@ def add_sequential_documents(
     return documents
 
 def add_raw_document(
-        session: Session, 
-        document: str, 
-        owner_agent: str, 
-        source_url: str | None = None, 
+        session: Session,
+        document: str,
+        owner_agent: str,
+        source_url: str | None = None,
         roles: dict[str, list[str]] | None = None
         ) -> list[Document]:
-    """Insert a raw document string, chunking it into smaller pieces."""
+    """Insert a raw document string, chunking it into smaller pieces.
+
+    If `source_url` is given and matches a previous ingestion, this reconciles
+    against it rather than blindly inserting again: an unchanged document
+    (identical set of chunk contents) is a no-op that returns the existing
+    chunks untouched; a changed one deprecates every one of that source's
+    previous chunks and inserts the new chunk sequence fresh. This is a full
+    replace rather than a chunk-by-chunk patch — patching would leave the
+    `prev` edge chain half old, half new, with no clean way to splice the two,
+    so an actual change just supersedes the whole previous sequence at once.
+    """
     chunked_documents = chunk_markdown(document)
+
+    if source_url is not None:
+        existing_documents = list(
+            session.scalars(
+                select(Document)
+                .where(Document.source_url == source_url, Document.deprecated.is_(False))
+                .order_by(Document.created_at)
+            )
+        )
+        if existing_documents:
+            new_hashes = {hash_content(chunk) for chunk in chunked_documents}
+            existing_hashes = {doc.content_hash for doc in existing_documents}
+            if new_hashes == existing_hashes:
+                return existing_documents
+
+            for old_document in existing_documents:
+                old_document.deprecated = True
+
     return add_sequential_documents(
         session,
         contents=chunked_documents,
@@ -120,7 +163,7 @@ def add_raw_document(
         source_urls=[source_url] * len(chunked_documents) if source_url is not None else None,
         roles=roles
     )
-    
+
 
 def add_raw_documents(
         session: Session, 
@@ -167,7 +210,9 @@ def update_document(
     fact that it was superseded and by what, both stay on record.
 
     `embedding` is computed automatically from `content` if not supplied, same
-    as `add_document`.
+    as `add_document`. If `content` is unchanged from the current revision,
+    `add_document`'s own exact-match check returns that same row back, so
+    there is nothing to supersede — this is a no-op.
     """
     old_document = session.get(Document, document_id)
     if old_document is None:
@@ -182,6 +227,8 @@ def update_document(
         summary_embedding=summary_embedding,
         source_url=source_url,
     )
+    if new_document.id == old_document.id:
+        return new_document
 
     old_document.deprecated = True
     add_edge(

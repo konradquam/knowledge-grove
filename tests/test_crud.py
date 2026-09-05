@@ -4,7 +4,8 @@ import pytest
 from sqlalchemy import select
 
 from knowledge_grove import crud
-from knowledge_grove.models import DocumentAccess, Edge
+from knowledge_grove.models import Document, DocumentAccess, Edge
+from knowledge_grove.utils.hashing import hash_content
 
 from conftest import vec
 
@@ -764,3 +765,190 @@ def test_log_feedback(alice):
     assert feedback.source_method == "vector"
     assert feedback.rank == 1
     assert feedback.relevance == 0.8
+
+
+def test_add_document_sets_content_hash(alice):
+    doc = crud.add_document(
+        alice, content="hashable content", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    assert doc.content_hash == hash_content("hashable content")
+
+
+def test_add_document_returns_existing_document_for_identical_content(alice):
+    first = crud.add_document(
+        alice, content="duplicate me", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    second = crud.add_document(
+        alice, content="duplicate me", embedding=vec(1), owner_agent="agent_alice", summary="ignored"
+    )
+    alice.commit()
+
+    assert second.id == first.id
+    rows = alice.scalars(
+        select(Document).where(Document.content == "duplicate me")
+    ).all()
+    assert len(rows) == 1
+
+
+def test_add_document_dedup_does_not_use_the_new_calls_embedding_or_summary(alice):
+    first = crud.add_document(
+        alice, content="duplicate me", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    second = crud.add_document(
+        alice, content="duplicate me", embedding=vec(9), owner_agent="agent_alice", summary="a new summary"
+    )
+    alice.commit()
+
+    assert second.embedding == vec(0), "dedup should return the existing row untouched, not re-embed"
+    assert second.summary is None
+
+
+def test_add_document_dedup_preserves_the_original_owner_agent(alice):
+    first = crud.add_document(
+        alice, content="owned by alice first", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    second = crud.add_document(
+        alice, content="owned by alice first", embedding=vec(1), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    assert second.owner_agent == first.owner_agent == "agent_alice"
+
+
+def test_add_document_dedup_ignores_deprecated_documents(alice):
+    original = crud.add_document(
+        alice, content="will be superseded", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+    crud.update_document(alice, original.id, content="a real change", embedding=vec(1))
+    alice.commit()
+
+    reinserted = crud.add_document(
+        alice, content="will be superseded", embedding=vec(2), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    assert reinserted.id != original.id, "a deprecated row must not be reused as a dedup match"
+    assert reinserted.deprecated is False
+    assert reinserted.embedding == vec(2)
+
+
+def test_add_document_dedup_does_not_see_documents_hidden_by_rls(alice, bob):
+    private_to_bob = crud.add_document(
+        bob, content="identical across owners", embedding=vec(0), owner_agent="agent_bob", roles={}
+    )
+    bob.commit()
+
+    from_alice = crud.add_document(
+        alice, content="identical across owners", embedding=vec(1), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    assert from_alice.id != private_to_bob.id, (
+        "alice's session can't see agent_bob's private document under RLS, "
+        "so the dedup check must not find it and should insert alice's own row"
+    )
+
+
+def test_update_document_with_unchanged_content_is_a_noop(alice):
+    original = crud.add_document(
+        alice, content="steady state", embedding=vec(0), owner_agent="agent_alice"
+    )
+    alice.commit()
+
+    result = crud.update_document(alice, original.id, content="steady state", embedding=vec(1))
+    alice.commit()
+
+    assert result.id == original.id
+    assert result.embedding == vec(0)
+
+    unchanged = crud.get_by_id(alice, original.id)
+    assert unchanged.deprecated is False
+    assert alice.scalars(
+        select(Edge).where(Edge.from_document_id == original.id, Edge.edge_type == "supersedes")
+    ).all() == []
+
+
+def test_add_raw_document_reingesting_identical_content_with_source_url_is_a_noop(alice):
+    raw = "# Heading\n\npara one\n\npara two\n"
+    first = crud.add_raw_document(alice, raw, owner_agent="agent_alice", source_url="https://example.com/doc")
+    alice.commit()
+
+    second = crud.add_raw_document(alice, raw, owner_agent="agent_alice", source_url="https://example.com/doc")
+    alice.commit()
+
+    assert [d.id for d in second] == [d.id for d in first]
+    all_for_source = alice.scalars(
+        select(Document).where(Document.source_url == "https://example.com/doc")
+    ).all()
+    assert len(all_for_source) == len(first)
+
+
+def test_add_raw_document_reingesting_changed_content_replaces_the_whole_sequence(alice):
+    raw_v1 = "# Heading\n\npara one\n\npara two\n"
+    v1 = crud.add_raw_document(alice, raw_v1, owner_agent="agent_alice", source_url="https://example.com/doc")
+    alice.commit()
+
+    raw_v2 = "# Heading\n\npara one\n\npara two CHANGED\n\npara three\n"
+    v2 = crud.add_raw_document(alice, raw_v2, owner_agent="agent_alice", source_url="https://example.com/doc")
+    alice.commit()
+
+    v1_ids = {d.id for d in v1}
+    v2_ids = {d.id for d in v2}
+    assert v1_ids.isdisjoint(v2_ids), "every chunk is replaced, even one whose text (e.g. the heading) didn't change"
+
+    for old_id in v1_ids:
+        assert crud.get_by_id(alice, old_id).deprecated is True
+    for new_doc in v2:
+        assert new_doc.deprecated is False
+
+    assert [d.content for d in v2] == [
+        "# Heading\n\npara one",
+        "para two CHANGED",
+        "para three",
+    ]
+
+
+def test_add_raw_document_reconciliation_only_considers_currently_active_chunks(alice):
+    raw_v1 = "para one\n\npara two\n"
+    v1 = crud.add_raw_document(alice, raw_v1, owner_agent="agent_alice", source_url="https://example.com/doc")
+    alice.commit()
+
+    raw_v2 = "para one CHANGED\n\npara two\n"
+    v2 = crud.add_raw_document(alice, raw_v2, owner_agent="agent_alice", source_url="https://example.com/doc")
+    alice.commit()
+
+    # Reverting back to v1's content: v1's own rows are deprecated by now, so
+    # this must not mistake them for a still-current match -- it should
+    # deprecate v2 and insert v1's content as fresh rows.
+    v1_again = crud.add_raw_document(alice, raw_v1, owner_agent="agent_alice", source_url="https://example.com/doc")
+    alice.commit()
+
+    assert {d.id for d in v1_again}.isdisjoint({d.id for d in v1})
+    assert {d.id for d in v1_again}.isdisjoint({d.id for d in v2})
+    for doc in v2:
+        assert crud.get_by_id(alice, doc.id).deprecated is True
+    for doc in v1_again:
+        assert doc.deprecated is False
+
+
+def test_add_raw_document_without_source_url_still_dedupes_via_add_document(alice):
+    raw = "para one\n\npara two\n"
+    first = crud.add_raw_document(alice, raw, owner_agent="agent_alice")
+    alice.commit()
+
+    second = crud.add_raw_document(alice, raw, owner_agent="agent_alice")
+    alice.commit()
+
+    assert [d.id for d in second] == [d.id for d in first], (
+        "no source_url means no batch reconciliation, but add_document's own "
+        "exact-match check still applies per chunk"
+    )
