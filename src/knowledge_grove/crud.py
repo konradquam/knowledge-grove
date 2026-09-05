@@ -125,6 +125,77 @@ def add_sequential_documents(
 
     return documents
 
+def add_authored_chunks(
+    session: Session,
+    chunks: list[str],
+    owner_agent: str,
+    edges: list[dict] | None = None,
+    embeddings: list[list[float]] | None = None,
+    summaries: list[str] | None = None,
+    summary_embeddings: list[list[float]] | None = None,
+    source_urls: list[str] | None = None,
+    descriptions: list[str] | None = None,
+    roles: dict[str, list[str]] | None = None,
+) -> list[Document]:
+    """Insert a batch of already-segmented, agent-authored chunks in one call
+    (§9/§11 of the design doc) -- for content an agent is originating itself
+    (a decision writeup, a new note) rather than parsing an existing source,
+    where the agent can compose content already correctly segmented instead
+    of handing over one blob for a chunker to guess boundaries in.
+
+    `chunks` behaves exactly like add_sequential_documents: ordered content,
+    auto-linked with `prev` edges.
+
+    `edges` covers what add_sequential_documents can't -- relationships the
+    new chunks have beyond that sequence, to each other or to documents
+    already in the graph. Each entry is a dict:
+
+        {"from_index": int, "edge_type": str, "description": str | None,
+         "to_document_id": uuid.UUID | None,   # an existing document
+         "to_index": int | None,               # another chunk in this call
+         "external_url": str | None}
+
+    `from_index`/`to_index` are positions into `chunks` -- those chunks have
+    no document id yet at call time, so edges reference them by position
+    instead, resolved to real ids once every chunk is inserted. Exactly one
+    of `to_document_id` / `to_index` / `external_url` must be set per edge.
+    """
+    documents = add_sequential_documents(
+        session,
+        contents=chunks,
+        owner_agent=owner_agent,
+        embeddings=embeddings,
+        summaries=summaries,
+        summary_embeddings=summary_embeddings,
+        source_urls=source_urls,
+        descriptions=descriptions,
+        roles=roles,
+    )
+
+    for edge in edges or []:
+        targets_given = sum(
+            edge.get(key) is not None for key in ("to_document_id", "to_index", "external_url")
+        )
+        if targets_given != 1:
+            raise ValueError(
+                "exactly one of to_document_id, to_index, or external_url must be set per edge"
+            )
+
+        to_document_id = edge.get("to_document_id")
+        if edge.get("to_index") is not None:
+            to_document_id = documents[edge["to_index"]].id
+
+        add_edge(
+            session,
+            from_document_id=documents[edge["from_index"]].id,
+            edge_type=edge["edge_type"],
+            description=edge.get("description"),
+            to_document_id=to_document_id,
+            external_url=edge.get("external_url"),
+        )
+
+    return documents
+
 def add_raw_document(
         session: Session,
         document: str,

@@ -470,6 +470,131 @@ def test_add_sequential_documents_empty_list_returns_empty(alice):
     assert crud.add_sequential_documents(alice, contents=[], owner_agent="agent_alice") == []
 
 
+def test_add_authored_chunks_creates_documents_and_auto_prev_edges(alice):
+    docs = crud.add_authored_chunks(
+        alice, chunks=["chunk 0", "chunk 1", "chunk 2"], owner_agent="agent_alice",
+        embeddings=[vec(0), vec(1), vec(2)],
+    )
+    alice.commit()
+
+    assert [d.content for d in docs] == ["chunk 0", "chunk 1", "chunk 2"]
+
+    prev_1 = alice.scalars(
+        select(Edge).where(Edge.from_document_id == docs[1].id, Edge.edge_type == "prev")
+    ).one()
+    assert prev_1.to_document_id == docs[0].id
+    prev_2 = alice.scalars(
+        select(Edge).where(Edge.from_document_id == docs[2].id, Edge.edge_type == "prev")
+    ).one()
+    assert prev_2.to_document_id == docs[1].id
+
+
+def test_add_authored_chunks_with_no_edges_arg_behaves_like_add_sequential_documents(alice):
+    docs = crud.add_authored_chunks(
+        alice, chunks=["c0", "c1"], owner_agent="agent_alice", embeddings=[vec(0), vec(1)],
+    )
+    alice.commit()
+
+    assert [d.content for d in docs] == ["c0", "c1"]
+    assert alice.scalars(select(Edge).where(Edge.from_document_id == docs[0].id)).all() == []
+    prev = alice.scalars(select(Edge).where(Edge.from_document_id == docs[1].id)).one()
+    assert prev.to_document_id == docs[0].id
+
+
+def test_add_authored_chunks_edge_to_existing_document_via_to_document_id(alice):
+    existing = crud.add_document(alice, content="existing doc", embedding=vec(9), owner_agent="agent_alice")
+    alice.commit()
+
+    docs = crud.add_authored_chunks(
+        alice, chunks=["new chunk"], owner_agent="agent_alice", embeddings=[vec(0)],
+        edges=[{"from_index": 0, "edge_type": "source", "to_document_id": existing.id, "description": "derived from"}],
+    )
+    alice.commit()
+
+    edge = alice.scalars(select(Edge).where(Edge.from_document_id == docs[0].id)).one()
+    assert edge.edge_type == "source"
+    assert edge.to_document_id == existing.id
+    assert edge.description == "derived from"
+
+
+def test_add_authored_chunks_edge_between_two_new_chunks_via_to_index(alice):
+    docs = crud.add_authored_chunks(
+        alice, chunks=["chunk 0", "chunk 1", "chunk 2"], owner_agent="agent_alice",
+        embeddings=[vec(0), vec(1), vec(2)],
+        edges=[{"from_index": 2, "edge_type": "related", "to_index": 0}],
+    )
+    alice.commit()
+
+    related = alice.scalars(
+        select(Edge).where(Edge.from_document_id == docs[2].id, Edge.edge_type == "related")
+    ).one()
+    assert related.to_document_id == docs[0].id
+
+
+def test_add_authored_chunks_edge_to_external_url(alice):
+    docs = crud.add_authored_chunks(
+        alice, chunks=["chunk 0"], owner_agent="agent_alice", embeddings=[vec(0)],
+        edges=[{"from_index": 0, "edge_type": "tool", "external_url": "https://example.com/tool.py"}],
+    )
+    alice.commit()
+
+    edge = alice.scalars(select(Edge).where(Edge.from_document_id == docs[0].id)).one()
+    assert edge.external_url == "https://example.com/tool.py"
+    assert edge.to_document_id is None
+
+
+def test_add_authored_chunks_multiple_edges_from_different_chunks(alice):
+    existing = crud.add_document(alice, content="existing doc", embedding=vec(9), owner_agent="agent_alice")
+    alice.commit()
+
+    docs = crud.add_authored_chunks(
+        alice, chunks=["chunk 0", "chunk 1", "chunk 2"], owner_agent="agent_alice",
+        embeddings=[vec(0), vec(1), vec(2)],
+        edges=[
+            {"from_index": 0, "edge_type": "source", "to_document_id": existing.id},
+            {"from_index": 2, "edge_type": "related", "to_index": 0},
+            {"from_index": 1, "edge_type": "tool", "external_url": "https://example.com/tool.py"},
+        ],
+    )
+    alice.commit()
+
+    assert alice.scalars(
+        select(Edge).where(Edge.from_document_id == docs[0].id, Edge.edge_type == "source")
+    ).one().to_document_id == existing.id
+    assert alice.scalars(
+        select(Edge).where(Edge.from_document_id == docs[2].id, Edge.edge_type == "related")
+    ).one().to_document_id == docs[0].id
+    assert alice.scalars(
+        select(Edge).where(Edge.from_document_id == docs[1].id, Edge.edge_type == "tool")
+    ).one().external_url == "https://example.com/tool.py"
+
+
+def test_add_authored_chunks_edge_with_no_target_raises(alice):
+    with pytest.raises(ValueError):
+        crud.add_authored_chunks(
+            alice, chunks=["c0"], owner_agent="agent_alice", embeddings=[vec(0)],
+            edges=[{"from_index": 0, "edge_type": "related"}],
+        )
+
+
+def test_add_authored_chunks_edge_with_two_targets_raises(alice):
+    existing = crud.add_document(alice, content="existing doc", embedding=vec(9), owner_agent="agent_alice")
+    alice.commit()
+
+    with pytest.raises(ValueError):
+        crud.add_authored_chunks(
+            alice, chunks=["c0"], owner_agent="agent_alice", embeddings=[vec(0)],
+            edges=[{
+                "from_index": 0, "edge_type": "related",
+                "to_document_id": existing.id, "external_url": "https://example.com",
+            }],
+        )
+
+
+def test_add_authored_chunks_empty_chunks_returns_empty(alice):
+    assert crud.add_authored_chunks(alice, chunks=[], owner_agent="agent_alice") == []
+
+
 def test_add_raw_document_chunks_by_heading_and_creates_prev_edges(alice):
     raw = "# Heading One\n\npara one\n\npara two\n\n# Heading Two\npara three\n"
     docs = crud.add_raw_document(alice, raw, owner_agent="agent_alice")
