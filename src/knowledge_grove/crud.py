@@ -5,9 +5,15 @@ from sqlalchemy.orm import Session
 
 from knowledge_grove.models import Document, DocumentAccess, DocumentTag, Edge, RetrievalFeedback
 from knowledge_grove.utils.embedding import get_embedding_model
-from knowledge_grove.constants import EdgeType, PERMISSIONS, SHARED_READER
-from knowledge_grove.utils.chunking import chunk_markdown
+from knowledge_grove.constants import ContentType, EdgeType, PERMISSIONS, SHARED_READER
+from knowledge_grove.utils.chunking import chunk_markdown, chunk_python, chunk_sql
 from knowledge_grove.utils.hashing import hash_content
+
+_CHUNKERS = {
+    ContentType.MARKDOWN: chunk_markdown,
+    ContentType.PYTHON: chunk_python,
+    ContentType.SQL: chunk_sql,
+}
 
 
 def add_document(
@@ -124,9 +130,17 @@ def add_raw_document(
         document: str,
         owner_agent: str,
         source_url: str | None = None,
-        roles: dict[str, list[str]] | None = None
+        roles: dict[str, list[str]] | None = None,
+        content_type: str = ContentType.MARKDOWN,
         ) -> list[Document]:
-    """Insert a raw document string, chunking it into smaller pieces.
+    """Insert a raw document string, chunking it into smaller pieces and
+    linking them with `prev` edges (add_sequential_documents) -- this holds
+    regardless of `content_type`: Python/SQL chunks from the same string are
+    sequentially linked exactly like markdown chunks are.
+
+    `content_type` picks the chunker (§11 of the design doc: the right
+    boundary logic differs by content type) -- "markdown" (default),
+    "python", or "sql".
 
     If `source_url` is given and matches a previous ingestion, this reconciles
     against it rather than blindly inserting again: an unchanged document
@@ -137,7 +151,9 @@ def add_raw_document(
     `prev` edge chain half old, half new, with no clean way to splice the two,
     so an actual change just supersedes the whole previous sequence at once.
     """
-    chunked_documents = chunk_markdown(document)
+    if content_type not in _CHUNKERS:
+        raise ValueError(f"unknown content_type {content_type!r}, expected one of {list(_CHUNKERS)}")
+    chunked_documents = _CHUNKERS[content_type](document)
 
     if source_url is not None:
         existing_documents = list(
@@ -166,17 +182,21 @@ def add_raw_document(
 
 
 def add_raw_documents(
-        session: Session, 
-        documents: list[str], 
-        owner_agent: str, 
-        source_urls: list[str | None] | None = None, 
-        roles: dict[str, list[str]] | None = None
+        session: Session,
+        documents: list[str],
+        owner_agent: str,
+        source_urls: list[str | None] | None = None,
+        roles: dict[str, list[str]] | None = None,
+        content_type: str = ContentType.MARKDOWN,
         ) -> list[list[Document]]:
-    """Insert a list of raw document strings, chunking each into smaller pieces."""
+    """Insert a list of raw document strings, chunking each into smaller pieces.
+
+    `content_type` applies to every document in the batch -- see add_raw_document.
+    """
     documents_list = []
     for i, document in enumerate(documents):
         source_url = source_urls[i] if source_urls is not None else None
-        document_chunks = add_raw_document(session, document, owner_agent, source_url, roles)
+        document_chunks = add_raw_document(session, document, owner_agent, source_url, roles, content_type)
         documents_list.append(document_chunks)
     return documents_list
 
