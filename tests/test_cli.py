@@ -1,11 +1,12 @@
 import sys
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from testcontainers.community.postgres import PostgresContainer
 
 from knowledge_grove import cli, crud
 from knowledge_grove.db import get_engine, get_session
+from knowledge_grove.models import Document
 
 PG_IMAGE = "pgvector/pgvector:pg16"
 
@@ -196,3 +197,186 @@ def test_main_create_agent_role_prompts_for_password_when_flag_omitted(admin_dsn
     engine.dispose()
 
     _drop_agent_role(admin_dsn, "agent_cli_main_prompt")
+
+
+@pytest.fixture()
+def ingest_agent(admin_dsn):
+    """A provisioned agent role + its DSN, for ingest_files tests."""
+    role_name = "agent_cli_ingest"
+    agent_dsn = cli.create_agent_role(admin_dsn, role_name, "ingest_pass")
+
+    yield agent_dsn, role_name
+
+    admin_engine = create_engine(admin_dsn)
+    with admin_engine.begin() as conn:
+        conn.execute(text("TRUNCATE documents CASCADE"))
+    admin_engine.dispose()
+    _drop_agent_role(admin_dsn, role_name)
+
+
+def _all_documents(admin_dsn):
+    engine = create_engine(admin_dsn)
+    with engine.connect() as conn:
+        docs = conn.execute(
+            select(Document.content, Document.source_url, Document.owner_agent, Document.deprecated)
+        ).all()
+    engine.dispose()
+    return docs
+
+
+def test_ingest_files_defaults_source_url_to_filename(admin_dsn, ingest_agent, tmp_path):
+    agent_dsn, role_name = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("just one paragraph, no breaks\n")
+
+    cli.ingest_files(agent_dsn, [str(file_path)])
+
+    docs = _all_documents(admin_dsn)
+    assert len(docs) == 1
+    assert docs[0].source_url == "notes.md"
+    assert docs[0].owner_agent == role_name
+    assert docs[0].content == "just one paragraph, no breaks"
+
+
+def test_ingest_files_uses_explicit_source_url(admin_dsn, ingest_agent, tmp_path):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+
+    cli.ingest_files(agent_dsn, [str(file_path)], source_urls=["https://example.com/notes"])
+
+    docs = _all_documents(admin_dsn)
+    assert docs[0].source_url == "https://example.com/notes"
+
+
+def test_ingest_files_chunks_the_file(admin_dsn, ingest_agent, tmp_path):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("# Heading\n\npara one\n\npara two\n")
+
+    cli.ingest_files(agent_dsn, [str(file_path)])
+
+    docs = _all_documents(admin_dsn)
+    assert [d.content for d in docs] == ["# Heading\n\npara one", "para two"]
+
+
+def test_ingest_files_processes_multiple_files_with_their_own_filenames(admin_dsn, ingest_agent, tmp_path):
+    agent_dsn, _ = ingest_agent
+    file_a = tmp_path / "a.md"
+    file_a.write_text("content a\n")
+    file_b = tmp_path / "b.md"
+    file_b.write_text("content b\n")
+
+    cli.ingest_files(agent_dsn, [str(file_a), str(file_b)])
+
+    docs = _all_documents(admin_dsn)
+    assert {d.source_url for d in docs} == {"a.md", "b.md"}
+
+
+def test_ingest_files_warns_when_source_url_already_has_documents(admin_dsn, ingest_agent, tmp_path, monkeypatch, capsys):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+    cli.ingest_files(agent_dsn, [str(file_path)])
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    cli.ingest_files(agent_dsn, [str(file_path)])
+
+    captured = capsys.readouterr()
+    assert "Warning" in captured.out
+    assert "notes.md" in captured.out
+
+
+def test_ingest_files_confirming_prompt_over_identical_content_stays_a_noop(admin_dsn, ingest_agent, tmp_path, monkeypatch):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+    cli.ingest_files(agent_dsn, [str(file_path)])
+    first_count = len(_all_documents(admin_dsn))
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    cli.ingest_files(agent_dsn, [str(file_path)])
+
+    assert len(_all_documents(admin_dsn)) == first_count
+
+
+def test_ingest_files_declining_prompt_skips_the_file(admin_dsn, ingest_agent, tmp_path, monkeypatch, capsys):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+    cli.ingest_files(agent_dsn, [str(file_path)])
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    cli.ingest_files(agent_dsn, [str(file_path)])
+
+    captured = capsys.readouterr()
+    assert "Skipped" in captured.out
+
+
+def test_ingest_files_reusing_source_url_for_a_different_file_deprecates_the_old_one_when_confirmed(
+    admin_dsn, ingest_agent, tmp_path, monkeypatch
+):
+    agent_dsn, _ = ingest_agent
+    file_a = tmp_path / "a.md"
+    file_a.write_text("original content\n")
+    cli.ingest_files(agent_dsn, [str(file_a)])
+
+    file_b = tmp_path / "b.md"
+    file_b.write_text("replacement content\n")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    cli.ingest_files(agent_dsn, [str(file_b)], source_urls=["a.md"])
+
+    docs = _all_documents(admin_dsn)
+    original = next(d for d in docs if d.content == "original content")
+    replacement = next(d for d in docs if d.content == "replacement content")
+    assert original.deprecated is True
+    assert replacement.deprecated is False
+    assert replacement.source_url == "a.md"
+
+
+def test_ingest_files_assume_yes_skips_the_prompt(admin_dsn, ingest_agent, tmp_path, monkeypatch):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+    cli.ingest_files(agent_dsn, [str(file_path)])
+
+    def _fail_if_called(prompt=""):
+        raise AssertionError("input() should not be called when assume_yes=True")
+
+    monkeypatch.setattr("builtins.input", _fail_if_called)
+    cli.ingest_files(agent_dsn, [str(file_path)], assume_yes=True)
+
+    # Still a no-op content-wise (identical content), just without prompting.
+    assert len(_all_documents(admin_dsn)) == 1
+
+
+def test_main_ingest_subcommand_end_to_end(admin_dsn, ingest_agent, tmp_path, monkeypatch):
+    agent_dsn, role_name = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("# Heading\n\npara one\n\npara two\n")
+
+    monkeypatch.setenv("KNOWLEDGE_GROVE_DSN", agent_dsn)
+    monkeypatch.setattr(sys, "argv", ["knowledge-grove", "ingest", str(file_path)])
+
+    cli.main()
+
+    docs = _all_documents(admin_dsn)
+    assert [d.content for d in docs] == ["# Heading\n\npara one", "para two"]
+    assert all(d.owner_agent == role_name for d in docs)
+
+
+def test_main_ingest_rejects_mismatched_source_url_count(admin_dsn, ingest_agent, tmp_path, monkeypatch):
+    agent_dsn, _ = ingest_agent
+    file_a = tmp_path / "a.md"
+    file_a.write_text("a\n")
+    file_b = tmp_path / "b.md"
+    file_b.write_text("b\n")
+
+    monkeypatch.setenv("KNOWLEDGE_GROVE_DSN", agent_dsn)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["knowledge-grove", "ingest", str(file_a), str(file_b), "--source-url", "only-one"],
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main()
