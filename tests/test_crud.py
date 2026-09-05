@@ -940,6 +940,49 @@ def test_add_raw_document_reconciliation_only_considers_currently_active_chunks(
         assert doc.deprecated is False
 
 
+def test_add_raw_document_python_content_type_creates_prev_edges(alice):
+    python_source = "def foo():\n    return 1\n\n\ndef bar():\n    return 2\n"
+    docs = crud.add_raw_document(alice, python_source, owner_agent="agent_alice", content_type="python")
+    alice.commit()
+
+    assert [d.content for d in docs] == ["def foo():\n    return 1", "def bar():\n    return 2"]
+    edge = alice.scalars(select(Edge).where(Edge.from_document_id == docs[1].id)).one()
+    assert edge.to_document_id == docs[0].id
+    assert edge.edge_type == "prev"
+
+
+def test_add_raw_document_sql_content_type_creates_prev_edges(alice):
+    sql_source = "SELECT 1;\n\nSELECT 2;\n"
+    docs = crud.add_raw_document(alice, sql_source, owner_agent="agent_alice", content_type="sql")
+    alice.commit()
+
+    assert [d.content for d in docs] == ["SELECT 1;", "SELECT 2;"]
+    edge = alice.scalars(select(Edge).where(Edge.from_document_id == docs[1].id)).one()
+    assert edge.to_document_id == docs[0].id
+    assert edge.edge_type == "prev"
+
+
+def test_add_raw_document_default_content_type_is_markdown(alice):
+    docs = crud.add_raw_document(alice, "# H\n\npara one\n\npara two\n", owner_agent="agent_alice")
+    alice.commit()
+
+    assert [d.content for d in docs] == ["# H\n\npara one", "para two"]
+
+
+def test_add_raw_document_invalid_content_type_raises(alice):
+    with pytest.raises(ValueError):
+        crud.add_raw_document(alice, "content", owner_agent="agent_alice", content_type="not-a-real-type")
+
+
+def test_add_raw_documents_applies_content_type_to_every_document_in_batch(alice):
+    sources = ["def foo():\n    pass\n", "def bar():\n    pass\n"]
+    result = crud.add_raw_documents(alice, sources, owner_agent="agent_alice", content_type="python")
+    alice.commit()
+
+    assert [d.content for d in result[0]] == ["def foo():\n    pass"]
+    assert [d.content for d in result[1]] == ["def bar():\n    pass"]
+
+
 def test_add_raw_document_without_source_url_still_dedupes_via_add_document(alice):
     raw = "para one\n\npara two\n"
     first = crud.add_raw_document(alice, raw, owner_agent="agent_alice")

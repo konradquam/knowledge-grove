@@ -27,3 +27,8 @@ class EdgeType(StrEnum):
 class PERMISSIONS(StrEnum):
     READ = "read"
     WRITE = "write"
+
+class ContentType(StrEnum):
+    MARKDOWN = "markdown"
+    PYTHON = "python"
+    SQL = "sql"

@@ -16,6 +16,7 @@ dependencies = [
     "pgvector>=0.2",
     "sentence_transformers",
     "mcp>=2.0",
+    "sqlparse>=0.5",
 ]
 
 [project.scripts]

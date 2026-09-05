@@ -1,4 +1,6 @@
-from knowledge_grove.utils.chunking import chunk_markdown
+import pytest
+
+from knowledge_grove.utils.chunking import chunk_markdown, chunk_python, chunk_sql
 
 
 def test_single_paragraph_no_heading_is_one_chunk():
@@ -89,3 +91,116 @@ def test_chunks_preserve_document_order():
         "# Second\nbody 2",
         "# Third\nbody 3",
     ]
+
+
+def test_oversized_paragraph_gets_split_by_max_chars():
+    content = ("word " * 1000).strip() + "\n"
+    result = chunk_markdown(content, max_chars=100)
+    assert len(result) > 1
+    assert all(len(chunk) <= 100 for chunk in result)
+
+
+def test_max_chars_split_does_not_break_a_word_in_half():
+    content = ("word " * 1000).strip() + "\n"
+    result = chunk_markdown(content, max_chars=100)
+    for chunk in result:
+        for token in chunk.split():
+            assert token == "word"
+
+
+def test_max_chars_none_disables_the_fallback():
+    content = ("word " * 1000).strip() + "\n"
+    result = chunk_markdown(content, max_chars=None)
+    assert len(result) == 1
+    assert len(result[0]) > 2000
+
+
+def test_oversized_chunk_with_no_whitespace_hard_cuts_at_max_chars():
+    content = "a" * 250 + "\n"
+    result = chunk_markdown(content, max_chars=100)
+    assert result == ["a" * 100, "a" * 100, "a" * 50]
+
+
+def test_structural_split_still_applies_before_size_fallback():
+    content = "# Heading\n\npara one\n\npara two\n"
+    result = chunk_markdown(content, max_chars=100)
+    assert result == ["# Heading\n\npara one", "para two"]
+
+
+def test_default_max_chars_leaves_ordinary_content_untouched():
+    content = "just one paragraph\nsecond line\n"
+    assert chunk_markdown(content) == ["just one paragraph\nsecond line"]
+
+
+def test_chunk_python_splits_top_level_functions_into_separate_chunks():
+    content = "def foo():\n    return 1\n\n\ndef bar():\n    return 2\n"
+    assert chunk_python(content) == ["def foo():\n    return 1", "def bar():\n    return 2"]
+
+
+def test_chunk_python_splits_top_level_classes_into_separate_chunks():
+    content = "class Foo:\n    pass\n\n\nclass Bar:\n    pass\n"
+    assert chunk_python(content) == ["class Foo:\n    pass", "class Bar:\n    pass"]
+
+
+def test_chunk_python_keeps_decorator_with_its_function():
+    content = "@tool\ndef foo(x):\n    return x + 1\n"
+    assert chunk_python(content) == ["@tool\ndef foo(x):\n    return x + 1"]
+
+
+def test_chunk_python_keeps_multiple_stacked_decorators_with_its_function():
+    content = "@staticmethod\n@another_decorator\ndef bar():\n    pass\n"
+    assert chunk_python(content) == ["@staticmethod\n@another_decorator\ndef bar():\n    pass"]
+
+
+def test_chunk_python_collapses_consecutive_top_level_statements_into_one_chunk():
+    content = "import os\nimport sys\n\nCONST = 5\n\ndef foo():\n    pass\n"
+    result = chunk_python(content)
+    assert result == ["import os\nimport sys\nCONST = 5", "def foo():\n    pass"]
+
+
+def test_chunk_python_preserves_document_order():
+    content = "import os\n\ndef foo():\n    pass\n\nCONST = 5\n\nclass Bar:\n    pass\n"
+    result = chunk_python(content)
+    assert result == [
+        "import os",
+        "def foo():\n    pass",
+        "CONST = 5",
+        "class Bar:\n    pass",
+    ]
+
+
+def test_chunk_python_does_not_split_out_nested_functions():
+    content = "def outer():\n    def inner():\n        return 1\n    return inner()\n"
+    result = chunk_python(content)
+    assert result == ["def outer():\n    def inner():\n        return 1\n    return inner()"]
+
+
+def test_chunk_python_empty_string_returns_no_chunks():
+    assert chunk_python("") == []
+
+
+def test_chunk_python_invalid_syntax_raises_syntax_error():
+    with pytest.raises(SyntaxError):
+        chunk_python("def foo(:\n    pass\n")
+
+
+def test_chunk_sql_splits_multiple_statements():
+    content = "SELECT 1;\n\nINSERT INTO logs (msg) VALUES ('done');\n"
+    assert chunk_sql(content) == ["SELECT 1;", "INSERT INTO logs (msg) VALUES ('done');"]
+
+
+def test_chunk_sql_does_not_split_on_semicolon_inside_string_literal():
+    content = "SELECT * FROM users WHERE name = 'a;b';\n"
+    assert chunk_sql(content) == ["SELECT * FROM users WHERE name = 'a;b';"]
+
+
+def test_chunk_sql_single_statement_without_trailing_semicolon():
+    assert chunk_sql("SELECT 1") == ["SELECT 1"]
+
+
+def test_chunk_sql_empty_string_returns_no_chunks():
+    assert chunk_sql("") == []
+
+
+def test_chunk_sql_whitespace_only_returns_no_chunks():
+    assert chunk_sql("   \n\n  ") == []
