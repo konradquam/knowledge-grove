@@ -26,6 +26,7 @@ htmlcov/
 # Environment variables / secrets
 .env
 .env.*
+.mcp.json
 
 # Editors
 .vscode/
