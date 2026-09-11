@@ -32,16 +32,22 @@ def add_file_as_document(
     owner_agent: str,
     source_url: str | None = None,
     content_type: str | None = None,
+    roles: dict[str, list[str]] | None = None,
 ) -> list[Document]:
     """Read a file and add its contents as a document, chunking it into smaller pieces.
 
     `content_type` picks the chunker (see add_raw_document); if omitted, it's
     guessed from the file's extension via detect_content_type.
+
+    `roles` grants other roles access to every resulting chunk (see
+    add_document); if omitted, defaults to {"shared_reader": ["read"]}.
     """
     document_content = file_to_string(file_path)
     if content_type is None:
         content_type = detect_content_type(file_path)
-    return add_raw_document(session, document_content, owner_agent, source_url, content_type=content_type)
+    return add_raw_document(
+        session, document_content, owner_agent, source_url=source_url, roles=roles, content_type=content_type,
+    )
 
 
 def add_files_as_documents(
@@ -50,17 +56,23 @@ def add_files_as_documents(
     owner_agent: str,
     source_urls: list[str | None] | None = None,
     content_types: list[str | None] | None = None,
+    roles: dict[str, list[str]] | None = None,
 ) -> list[list[Document]]:
     """Read multiple files and add their contents as documents, chunking each into smaller pieces.
 
     `content_types` applies per file, matched by position to `file_paths`;
     a `None` entry (or omitting the list entirely) falls back to per-file
     extension detection, same as add_file_as_document.
+
+    `roles` applies uniformly to every document across every file in this
+    batch (see add_document); if omitted, defaults to {"shared_reader": ["read"]}.
     """
     documents_list = []
     for i, file_path in enumerate(file_paths):
         source_url = source_urls[i] if source_urls is not None else None
         content_type = content_types[i] if content_types is not None else None
-        document_chunks = add_file_as_document(session, file_path, owner_agent, source_url, content_type)
+        document_chunks = add_file_as_document(
+            session, file_path, owner_agent, source_url=source_url, content_type=content_type, roles=roles,
+        )
         documents_list.append(document_chunks)
     return documents_list

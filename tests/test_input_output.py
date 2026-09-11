@@ -1,12 +1,19 @@
 from sqlalchemy import select
 
-from knowledge_grove.models import Edge
+from knowledge_grove.models import DocumentAccess, Edge
 from knowledge_grove.utils.input_output import (
     add_file_as_document,
     add_files_as_documents,
     detect_content_type,
     file_to_string,
 )
+
+
+def _grant_pairs(session, document_id):
+    grants = session.scalars(
+        select(DocumentAccess).where(DocumentAccess.document_id == document_id)
+    ).all()
+    return {(g.grantee_role, g.permission) for g in grants}
 
 
 def test_file_to_string_reads_file_contents(tmp_path):
@@ -198,3 +205,51 @@ def test_add_files_as_documents_applies_content_types_per_file(alice, tmp_path):
 
     assert [d.content for d in result[0]] == ["def foo():\n    pass"]
     assert [d.content for d in result[1]] == ["# H\n\npara one"]
+
+
+def test_add_file_as_document_no_roles_arg_defaults_to_shared_reader(alice, tmp_path):
+    path = tmp_path / "doc.md"
+    path.write_text("content\n")
+
+    docs = add_file_as_document(alice, str(path), owner_agent="agent_alice")
+    alice.commit()
+
+    assert _grant_pairs(alice, docs[0].id) == {("shared_reader", "read")}
+
+
+def test_add_file_as_document_empty_roles_dict_means_no_grants(alice, tmp_path):
+    path = tmp_path / "doc.md"
+    path.write_text("content\n")
+
+    docs = add_file_as_document(alice, str(path), owner_agent="agent_alice", roles={})
+    alice.commit()
+
+    assert _grant_pairs(alice, docs[0].id) == set()
+
+
+def test_add_file_as_document_custom_roles_applied(alice, tmp_path):
+    path = tmp_path / "doc.md"
+    path.write_text("content\n")
+
+    docs = add_file_as_document(
+        alice, str(path), owner_agent="agent_alice", roles={"agent_bob": ["read", "write"]},
+    )
+    alice.commit()
+
+    assert _grant_pairs(alice, docs[0].id) == {("agent_bob", "read"), ("agent_bob", "write")}
+
+
+def test_add_files_as_documents_applies_roles_uniformly_across_batch(alice, tmp_path):
+    path_a = tmp_path / "a.md"
+    path_a.write_text("content a\n")
+    path_b = tmp_path / "b.md"
+    path_b.write_text("content b\n")
+
+    result = add_files_as_documents(
+        alice, [str(path_a), str(path_b)], owner_agent="agent_alice", roles={"agent_bob": ["read"]},
+    )
+    alice.commit()
+
+    for chunks in result:
+        for doc in chunks:
+            assert _grant_pairs(alice, doc.id) == {("agent_bob", "read")}
