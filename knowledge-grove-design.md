@@ -1,8 +1,31 @@
 # Knowledge Grove — Design Document
 
-**Status:** Plan phase. Nothing described here is implemented yet. Open points are marked explicitly as **Open decision** or **Optional** rather than presented as settled — resolve those before or during implementation of the relevant piece, don't assume a default silently.
-
 A Postgres-backed knowledge schema and SDK that lets agents — in one repo and across repos — store, discover, and act on shared context: document chunks, embeddings, exact-match tags, and a graph of links between them, including links out to executable tools.
+
+**Status:** Most of what's described below is implemented and tested against real Postgres — see [Implementation status](#implementation-status) for the precise, current breakdown of what's built versus what's still designed-but-open. The rest of this document is left in its original design-phase voice (present tense, describing target behavior) even where a section is still open; that section's entry in the status table below is the authority on whether it's real yet, not the prose's tense. Open points are still marked explicitly as **Open decision** or **Optional** where they haven't been resolved.
+
+## Implementation status
+
+| Section | Status |
+|---|---|
+| §2 Core data model | Done — all five tables, indexes, RLS. |
+| §3 Entry points | Done — all five (`get_by_id`, `search_tags`, `search_ilike`, `search_fulltext`, `search_vector`). |
+| §4 Auth & access control | Done — per-agent roles, RLS policies, `shared_reader` group role, `document_access` grants. |
+| §5 Ranking & fusion | Done — weighted RRF as specified, tags handled as a pre-filter rather than folded into the fusion. |
+| §6 Graph-topology ranking | **Not implemented.** `gather_context` fuses the four search entry points but never walks `edges` afterward — no PPR pass, no bounded traversal expansion. |
+| §7 Learning from usage | Capture only. `retrieval_feedback`/`log_feedback` exist; nothing consumes that table yet — `METHOD_WEIGHTS` is still a static, hand-set dict. None of the three stages (manual, automated-offline, online) have tooling built. |
+| §8 Tool discovery (MCP) | Resolved differently than originally specified, not left undone: no `describe_tool`/`invoke_tool` dispatcher exists, and none is planned. A tool is instead just an ordinary document (content = source/description) tagged for discovery — the agent that finds one copies it and runs it in its own execution environment. See "Ideas for later" below for the separate, deliberately out-of-scope idea of an agent-writable tool *execution* service. |
+| §9 SDK surface | Done, including `add_authored_chunks` (the design doc's `add_authored_chunks(chunks, edges)`). |
+| §10 Gathering context | Steps 1–3 and 5 done. Step 4 (graph traversal) is blocked on §6. Step 6 (auto-logging feedback per result) isn't wired up — `log_feedback` is only ever called explicitly today. |
+| §11 Chunking strategy | Done for markdown (structural + a `max_chars` last-resort fallback) and for code/SQL (`ast`-based Python chunking, `sqlparse`-based SQL chunking). Author-time chunking is `add_authored_chunks`. The optional semantic-shift fallback for prose is not implemented (marked *Optional* in the original text; still true). |
+| §12 Adding & updating | Resolved: chunks are immutable: `update_document` creates a new revision, flags the old one deprecated, links it via a `supersedes` edge. |
+| §13 Importing | Partial. File-by-file ingestion (`add_raw_document`/`add_file_as_document`, and the `ingest` CLI command) is done, including re-ingestion reconciliation (identical content is a no-op; changed content deprecates the old chunks and inserts the new ones fresh) and content-type detection from file extension. Walking a whole repository automatically, and detecting `@tool`-decorated functions specifically, is **not implemented**. |
+| §14 Bootstrapping | Done — `init-db`, `create-agent-role`. |
+| §15 Package & distribution | Done — DSN passed in directly, `KNOWLEDGE_GROVE_DSN` as a local-dev convenience only, no secrets-backend integration in the package itself. Not yet published to PyPI (install from source). |
+| §16 Explicit non-goals | Upheld — no orchestration platform, no connection pooler, no bespoke auth system got built. |
+| §17 Ideas for later | Untouched, as intended — still speculative. |
+
+Open points are marked explicitly as **Open decision** or **Optional** rather than presented as settled — resolve those before or during implementation of the relevant piece, don't assume a default silently.
 
 ## Table of contents
 
@@ -396,4 +419,4 @@ RRF (§5) is a form of rank aggregation, and rank aggregation is formally studie
 
 ---
 
-*Knowledge Grove · design document, plan phase · last compiled 2026-08-23*
+*Knowledge Grove · design document · design current, implementation status tracked separately above · last compiled 2026-09-11*
