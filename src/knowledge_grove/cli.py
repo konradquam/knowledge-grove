@@ -5,6 +5,7 @@ use from a shell rather than another agent's own code).
 """
 import argparse
 import getpass
+import json
 import os
 from pathlib import Path
 
@@ -113,6 +114,7 @@ def ingest_files(
     file_paths: list[str],
     source_urls: list[str | None] | None = None,
     content_types: list[str | None] | None = None,
+    roles: dict[str, list[str]] | None = None,
     assume_yes: bool = False,
 ) -> None:
     """Ingest one or more files as documents, chunking each and computing
@@ -132,6 +134,11 @@ def ingest_files(
     from its extension (detect_content_type) -- `.py` -> python, `.sql` ->
     sql, everything else -> markdown. Pass `content_types` to override that
     per file, matched by position to `file_paths`.
+
+    `roles` grants other roles access to every document ingested in this
+    call (see add_document); if omitted, defaults to {"shared_reader":
+    ["read"]} -- readable by every agent in the shared_reader group. Pass
+    {} to keep everything ingested here private to the owner only.
     """
     resolved_source_urls = [
         source_urls[i] if source_urls and source_urls[i] else Path(file_paths[i]).name
@@ -164,7 +171,8 @@ def ingest_files(
                     continue
 
             docs = add_file_as_document(
-                session, path, owner_agent=owner_agent, source_url=source_url, content_type=content_type,
+                session, path, owner_agent=owner_agent, source_url=source_url,
+                content_type=content_type, roles=roles,
             )
             session.commit()
             used_type = content_type or detect_content_type(path)
@@ -212,6 +220,15 @@ def main() -> None:
         ),
     )
     ingest_parser.add_argument(
+        "--roles", default=None,
+        help=(
+            "JSON object granting other roles access to every document ingested "
+            "in this call, e.g. '{\"shared_reader\": [\"read\"]}'. Applies to the "
+            "whole call, not per file. Defaults to {\"shared_reader\": [\"read\"]} "
+            "if omitted; pass '{}' to keep everything private to the owner."
+        ),
+    )
+    ingest_parser.add_argument(
         "-y", "--yes", action="store_true",
         help="Don't prompt for confirmation when a source_url already has existing documents.",
     )
@@ -235,9 +252,15 @@ def main() -> None:
             parser.error("--source-url must be given once per file, or omitted entirely")
         if args.content_type and len(args.content_type) != len(args.files):
             parser.error("--content-type must be given once per file, or omitted entirely")
+        roles = None
+        if args.roles is not None:
+            try:
+                roles = json.loads(args.roles)
+            except json.JSONDecodeError as e:
+                parser.error(f"--roles must be valid JSON: {e}")
         ingest_files(
             dsn, args.files, source_urls=args.source_url,
-            content_types=args.content_type, assume_yes=args.yes,
+            content_types=args.content_type, roles=roles, assume_yes=args.yes,
         )
 
 

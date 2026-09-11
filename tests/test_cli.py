@@ -6,7 +6,7 @@ from testcontainers.community.postgres import PostgresContainer
 
 from knowledge_grove import cli, crud
 from knowledge_grove.db import get_engine, get_session
-from knowledge_grove.models import Document
+from knowledge_grove.models import Document, DocumentAccess
 
 PG_IMAGE = "pgvector/pgvector:pg16"
 
@@ -450,6 +450,91 @@ def test_main_ingest_rejects_mismatched_content_type_count(admin_dsn, ingest_age
     monkeypatch.setattr(
         sys, "argv",
         ["knowledge-grove", "ingest", str(file_a), str(file_b), "--content-type", "markdown"],
+    )
+
+    with pytest.raises(SystemExit):
+        cli.main()
+
+
+def _grant_pairs(admin_dsn, document_id):
+    engine = create_engine(admin_dsn)
+    with engine.connect() as conn:
+        grants = conn.execute(
+            select(DocumentAccess.grantee_role, DocumentAccess.permission).where(
+                DocumentAccess.document_id == document_id
+            )
+        ).all()
+    engine.dispose()
+    return {(g.grantee_role, g.permission) for g in grants}
+
+
+def _document_id_for_source_url(admin_dsn, source_url):
+    engine = create_engine(admin_dsn)
+    with engine.connect() as conn:
+        doc_id = conn.execute(select(Document.id).where(Document.source_url == source_url)).scalar()
+    engine.dispose()
+    return doc_id
+
+
+def test_ingest_files_no_roles_arg_defaults_to_shared_reader(admin_dsn, ingest_agent, tmp_path):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+
+    cli.ingest_files(agent_dsn, [str(file_path)])
+
+    doc_id = _document_id_for_source_url(admin_dsn, "notes.md")
+    assert _grant_pairs(admin_dsn, doc_id) == {("shared_reader", "read")}
+
+
+def test_ingest_files_custom_roles_applied(admin_dsn, ingest_agent, tmp_path):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+
+    cli.ingest_files(agent_dsn, [str(file_path)], roles={"agent_bob": ["read", "write"]})
+
+    doc_id = _document_id_for_source_url(admin_dsn, "notes.md")
+    assert _grant_pairs(admin_dsn, doc_id) == {("agent_bob", "read"), ("agent_bob", "write")}
+
+
+def test_ingest_files_empty_roles_dict_means_private(admin_dsn, ingest_agent, tmp_path):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+
+    cli.ingest_files(agent_dsn, [str(file_path)], roles={})
+
+    doc_id = _document_id_for_source_url(admin_dsn, "notes.md")
+    assert _grant_pairs(admin_dsn, doc_id) == set()
+
+
+def test_main_ingest_parses_roles_json(admin_dsn, ingest_agent, tmp_path, monkeypatch):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+
+    monkeypatch.setenv("KNOWLEDGE_GROVE_DSN", agent_dsn)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["knowledge-grove", "ingest", str(file_path), "--roles", '{"agent_bob": ["read"]}'],
+    )
+
+    cli.main()
+
+    doc_id = _document_id_for_source_url(admin_dsn, "notes.md")
+    assert _grant_pairs(admin_dsn, doc_id) == {("agent_bob", "read")}
+
+
+def test_main_ingest_rejects_invalid_roles_json(admin_dsn, ingest_agent, tmp_path, monkeypatch):
+    agent_dsn, _ = ingest_agent
+    file_path = tmp_path / "notes.md"
+    file_path.write_text("content\n")
+
+    monkeypatch.setenv("KNOWLEDGE_GROVE_DSN", agent_dsn)
+    monkeypatch.setattr(
+        sys, "argv",
+        ["knowledge-grove", "ingest", str(file_path), "--roles", "not-json"],
     )
 
     with pytest.raises(SystemExit):
