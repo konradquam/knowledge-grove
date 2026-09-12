@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knowledge-grove"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Postgres-backed knowledge schema and SDK for shared agent context"
 readme = "README.md"
 license = { file = "LICENSE" }
