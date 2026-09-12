@@ -1,9 +1,16 @@
-from sentence_transformers import SentenceTransformer 
-from knowledge_grove.constants import EMBEDDING_DIM
 from functools import lru_cache
+
+from knowledge_grove.constants import EMBEDDING_DIM
 
 class EmbeddingModel:
     def __init__(self, model_name: str = 'intfloat/e5-base-v2'):
+        # Imported here, not at module level: sentence_transformers pulls in
+        # torch/transformers, which alone takes ~5s to import. Every CLI
+        # command (including --help) transitively imports this module via
+        # crud.py -- deferring the import to actual model construction means
+        # that cost is only paid when an embedding is genuinely needed.
+        from sentence_transformers import SentenceTransformer
+
         self._model = SentenceTransformer(model_name)
         actual_dim = self._model.get_embedding_dimension()
         if actual_dim != EMBEDDING_DIM:
